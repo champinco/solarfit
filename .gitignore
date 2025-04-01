@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+.env
+# Server specific ignores
+server/node_modules
+server/uploads/
+server/.env
