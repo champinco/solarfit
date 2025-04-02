@@ -2,6 +2,9 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const PDFDocument = require('pdfkit');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const port = 5000;
@@ -9,6 +12,37 @@ const port = 5000;
 // Middleware
 app.use(express.json());
 app.use(cors());
+
+// Set up multer for handling file uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const uploadDir = path.join(__dirname, 'uploads');
+    // Create the directory if it doesn't exist
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({ 
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    const filetypes = /jpeg|jpg|png/;
+    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = filetypes.test(file.mimetype);
+    if (mimetype && extname) {
+      return cb(null, true);
+    } else {
+      cb(new Error("Only JPEG, JPG, and PNG files are allowed"));
+    }
+  }
+});
 
 // Cache for geocoding results
 const cache = {};
@@ -59,6 +93,37 @@ const appliances = {
   ]
 };
 
+// Endpoint to provide the list of appliances
+app.get('/api/appliances', (req, res) => {
+  res.json(appliances);
+});
+
+// Endpoint to handle bill uploads
+app.post('/api/upload', upload.single('bill'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: 'No file uploaded' });
+  }
+
+  try {
+    // This is where you would typically send the file to an OCR service
+    // For now, we'll return mock data
+    const mockData = {
+      extractedData: {
+        consumptionKwh: 320,
+        totalAmount: 6400
+      }
+    };
+
+    // In a real implementation, delete the file after processing
+    // fs.unlinkSync(req.file.path);
+
+    res.json(mockData);
+  } catch (error) {
+    console.error('Error processing uploaded file:', error);
+    res.status(500).json({ message: 'Error processing bill', error: error.message });
+  }
+});
+
 // Geocoding function using Nominatim
 async function getCoordinates(location) {
   if (cache[location]) {
@@ -68,7 +133,10 @@ async function getCoordinates(location) {
 
   try {
     const response = await axios.get(
-      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(location)}`
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(location)}`,
+      {
+        headers: { 'User-Agent': 'SolarSizingApp/1.0' }
+      }
     );
     if (response.data.length > 0) {
       const { lat, lon } = response.data[0];
@@ -124,14 +192,11 @@ app.post('/api/calculate', async (req, res) => {
 
     // Estimate daily energy consumption
     let dailyKwh = 0;
-    if (params.appliances && params.userType) {
+    
+    if (params.appliances && params.appliances.length > 0) {
       dailyKwh = params.appliances.reduce((sum, appliance) => {
-        const applianceData = appliances[params.userType]?.find(a => a.name === appliance.name);
-        if (applianceData) {
-          const powerKW = applianceData.power / 1000; // Convert to kW
-          return sum + (powerKW * appliance.quantity * appliance.hoursPerDay);
-        }
-        return sum;
+        const powerKW = appliance.power / 1000; // Convert to kW
+        return sum + (powerKW * appliance.quantity * appliance.hoursPerDay);
       }, 0);
     } else {
       const monthlyKwh = params.avgMonthlyKwh || (params.avgMonthlyBill / 20); // Assuming 20 KSh/kWh
@@ -150,127 +215,172 @@ app.post('/api/calculate', async (req, res) => {
     const numberOfPanels = Math.ceil(totalWatts / panelWattage);
 
     const inverterCostPerKva = 10000; // KSh per kVA
-    const inverterSize = pvSize * 0.9;
+    const inverterSize = pvSize * 1.2; // Inverter should be 20% larger than PV size
     const totalInverterCost = inverterSize * inverterCostPerKva;
 
-    const chargeControllerCost = 30000; // KSh
+    const chargeControllerCost = params.systemType !== 'on-grid' ? 30000 : 0; // KSh, only for off-grid and hybrid
 
     // System type calculations
     const autonomyDays = params.autonomyDays || 1;
+    let batterySizeKwh = 0;
+    let numberOfBatteries = 0;
+    let totalBatteryCost = 0;
+    let totalCost = 0;
 
-    // On-grid (no batteries)
-    const onGridCost = totalPanelCost + totalInverterCost + chargeControllerCost;
-
-    // Off-grid (full battery backup)
-    const batterySizeOffGrid = dailyKwh * autonomyDays * 1.25; // kWh, 25% oversizing
-    const costPerBattery = 127500; // KSh for 5 kWh battery
-    const numberOfBatteriesOffGrid = Math.ceil(batterySizeOffGrid / 5);
-    const totalBatteryCostOffGrid = numberOfBatteriesOffGrid * costPerBattery;
-    const offGridCost = totalPanelCost + totalInverterCost + totalBatteryCostOffGrid + chargeControllerCost;
-
-    // Hybrid (half battery backup)
-    const batterySizeHybrid = dailyKwh * autonomyDays * 0.5; // kWh
-    const numberOfBatteriesHybrid = Math.ceil(batterySizeHybrid / 5);
-    const totalBatteryCostHybrid = numberOfBatteriesHybrid * costPerBattery;
-    const hybridCost = totalPanelCost + totalInverterCost + totalBatteryCostHybrid + chargeControllerCost;
-
-    // Annual grid cost and savings
-    const monthlyBill = params.avgMonthlyBill || (dailyKwh * 30 * 20); // 20 KSh/kWh
-    const annualGridCost = monthlyBill * 12;
-    const annualConsumption = dailyKwh * 365;
-    const rate = annualGridCost / annualConsumption;
-
-    const annualSavingsGridTied = Math.min(annualProduction, annualConsumption) * rate;
-    const annualSavingsOffGrid = annualGridCost; // No grid usage
-    const annualSavingsHybrid = annualSavingsGridTied; // Simplified assumption
-
-    // Results for selected system type
-    const selectedType = params.systemType || 'on-grid';
-    let selectedCost, batterySize, numberOfBatteries, totalBatteryCost;
-    if (selectedType === 'on-grid') {
-      selectedCost = onGridCost;
-      batterySize = null;
-      numberOfBatteries = 0;
-      totalBatteryCost = 0;
-    } else if (selectedType === 'off-grid') {
-      selectedCost = offGridCost;
-      batterySize = batterySizeOffGrid;
-      numberOfBatteries = numberOfBatteriesOffGrid;
-      totalBatteryCost = totalBatteryCostOffGrid;
+    // Different system type calculations
+    if (params.systemType === 'on-grid') {
+      // On-grid (no batteries)
+      totalCost = totalPanelCost + totalInverterCost;
     } else {
-      selectedCost = hybridCost;
-      batterySize = batterySizeHybrid;
-      numberOfBatteries = numberOfBatteriesHybrid;
-      totalBatteryCost = totalBatteryCostHybrid;
+      // Off-grid or hybrid (with batteries)
+      batterySizeKwh = dailyKwh * autonomyDays * 1.25; // kWh, 25% oversizing
+      const batteryCapacity = 5; // kWh per battery
+      const costPerBattery = 127500; // KSh for 5 kWh battery
+      
+      numberOfBatteries = Math.ceil(batterySizeKwh / batteryCapacity);
+      totalBatteryCost = numberOfBatteries * costPerBattery;
+      
+      totalCost = totalPanelCost + totalInverterCost + totalBatteryCost + chargeControllerCost;
     }
 
-    const costBreakdown = {
-      panels: Math.round(totalPanelCost),
-      inverter: Math.round(totalInverterCost),
-      batteries: selectedType !== 'on-grid' ? Math.round(totalBatteryCost) : 0,
-      chargeController: chargeControllerCost,
-      total: Math.round(selectedCost)
-    };
+    // Apply budget constraints if provided
+    let budgetConstraint = false;
+    if (params.budget && parseFloat(params.budget) > 0) {
+      const budget = parseFloat(params.budget);
+      if (totalCost > budget) {
+        // Scale down the system to fit budget
+        const scaleFactor = budget / totalCost;
+        pvSize = pvSize * scaleFactor;
+        totalWatts = pvSize * 1000;
+        numberOfPanels = Math.ceil(totalWatts / panelWattage);
+        inverterSize = pvSize * 1.2;
+        
+        // Recalculate costs
+        totalPanelCost = totalWatts * costPerWatt;
+        totalInverterCost = inverterSize * inverterCostPerKva;
+        
+        if (params.systemType !== 'on-grid') {
+          batterySizeKwh = batterySizeKwh * scaleFactor;
+          numberOfBatteries = Math.ceil(batterySizeKwh / 5);
+          totalBatteryCost = numberOfBatteries * costPerBattery;
+        }
+        
+        totalCost = totalPanelCost + totalInverterCost + totalBatteryCost + chargeControllerCost;
+        budgetConstraint = true;
+      }
+    }
 
-    const results = {
-      pvSizeKwP: parseFloat(pvSize.toFixed(2)),
-      inverterSizeKva: parseFloat(inverterSize.toFixed(2)),
-      batterySizeKwh: batterySize ? parseFloat(batterySize.toFixed(2)) : null,
-      dailyPeakSunHours: parseFloat(dailyPeakSunHours.toFixed(2)),
-      annualProductionKwh: parseFloat(annualProduction.toFixed(2)),
-      estimatedCost: costBreakdown,
-      numberOfPanels,
-      panelWattage,
-      numberOfBatteries,
-      systemComparisons: {
-        onGrid: { cost: Math.round(onGridCost), annualSavings: parseFloat(annualSavingsGridTied.toFixed(2)) },
-        offGrid: { cost: Math.round(offGridCost), annualSavings: parseFloat(annualSavingsOffGrid.toFixed(2)) },
-        hybrid: { cost: Math.round(hybridCost), annualSavings: parseFloat(annualSavingsHybrid.toFixed(2)) }
+    // Prepare the result
+    const result = {
+      pvSizeKwP: pvSize,
+      panelWattage: panelWattage,
+      numberOfPanels: numberOfPanels,
+      inverterSizeKva: inverterSize,
+      dailyEnergyConsumption: dailyKwh,
+      annualProduction: annualProduction,
+      dailyPeakSunHours: dailyPeakSunHours,
+      budgetConstrained: budgetConstraint,
+      systemType: params.systemType,
+      estimatedCost: {
+        panels: Math.round(totalPanelCost),
+        inverter: Math.round(totalInverterCost),
+        batteries: Math.round(totalBatteryCost),
+        chargeController: chargeControllerCost,
+        total: Math.round(totalCost)
       }
     };
 
-    console.log('Calculation results:', results);
-    res.status(200).json(results);
+    // Add battery info only for off-grid and hybrid systems
+    if (params.systemType !== 'on-grid') {
+      result.batterySizeKwh = batterySizeKwh;
+      result.numberOfBatteries = numberOfBatteries;
+    }
+
+    res.json(result);
   } catch (error) {
-    console.error('Calculation error:', error.message);
-    res.status(500).json({ message: 'Calculation failed', error: error.message });
+    console.error('Calculation error:', error);
+    res.status(500).json({ message: 'Error calculating solar system', error: error.message });
   }
 });
 
-// PDF generation endpoint
+// PDF Generation endpoint
 app.post('/api/generate-pdf', (req, res) => {
-  const data = req.body;
-  const doc = new PDFDocument();
-  const buffers = [];
-  doc.on('data', buffers.push.bind(buffers));
-  doc.on('end', () => {
-    const pdfData = Buffer.concat(buffers);
+  const calculationResult = req.body;
+  
+  try {
+    const doc = new PDFDocument();
+    
+    // Set response headers for PDF download
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 'attachment; filename="solar_report.pdf"');
-    res.send(pdfData);
-  });
-
-  doc.fontSize(16).text('Solar Sizing Report', { align: 'center' });
-  doc.moveDown();
-  doc.fontSize(12)
-    .text(`Location: ${data.location}`)
-    .text(`System Type: ${data.systemType}`)
-    .text(`PV Size: ${data.pvSizeKwP} kWp`)
-    .text(`Inverter Size: ${data.inverterSizeKva} kVA`);
-  if (data.batterySizeKwh) {
-    doc.text(`Battery Size: ${data.batterySizeKwh} kWh`);
+    res.setHeader('Content-Disposition', 'attachment; filename=solar_report.pdf');
+    
+    // Pipe the PDF directly to the response
+    doc.pipe(res);
+    
+    // Add content to PDF
+    doc.fontSize(20).text('Solar System Sizing Report', { align: 'center' });
+    doc.moveDown();
+    
+    doc.fontSize(16).text('System Specifications:');
+    doc.fontSize(12).text(`PV Size: ${calculationResult.pvSizeKwP.toFixed(2)} kWp`);
+    doc.text(`Number of Panels: ${calculationResult.numberOfPanels} (${calculationResult.panelWattage}W each)`);
+    doc.text(`Inverter Size: ${calculationResult.inverterSizeKva.toFixed(2)} kVA`);
+    
+    if (calculationResult.batterySizeKwh) {
+      doc.text(`Battery Storage: ${calculationResult.batterySizeKwh.toFixed(2)} kWh`);
+      doc.text(`Number of Batteries: ${calculationResult.numberOfBatteries}`);
+    }
+    
+    doc.moveDown();
+    doc.fontSize(16).text('Energy Analysis:');
+    doc.fontSize(12).text(`Daily Energy Consumption: ${calculationResult.dailyEnergyConsumption.toFixed(2)} kWh`);
+    doc.text(`Annual Energy Production: ${calculationResult.annualProduction.toFixed(2)} kWh`);
+    doc.text(`Daily Peak Sun Hours: ${calculationResult.dailyPeakSunHours.toFixed(2)} hours`);
+    
+    doc.moveDown();
+    doc.fontSize(16).text('Cost Breakdown:');
+    doc.fontSize(12).text(`Solar Panels: ${calculationResult.estimatedCost.panels.toLocaleString()} KSh`);
+    doc.text(`Inverter: ${calculationResult.estimatedCost.inverter.toLocaleString()} KSh`);
+    
+    if (calculationResult.estimatedCost.batteries > 0) {
+      doc.text(`Batteries: ${calculationResult.estimatedCost.batteries.toLocaleString()} KSh`);
+    }
+    
+    if (calculationResult.estimatedCost.chargeController > 0) {
+      doc.text(`Charge Controller: ${calculationResult.estimatedCost.chargeController.toLocaleString()} KSh`);
+    }
+    
+    doc.moveDown();
+    doc.fontSize(14).text(`Total Estimated Cost: ${calculationResult.estimatedCost.total.toLocaleString()} KSh`, { underline: true });
+    
+    // Add system type specific notes
+    doc.moveDown();
+    doc.fontSize(16).text('System Notes:');
+    
+    if (calculationResult.systemType === 'on-grid') {
+      doc.fontSize(12).text('This on-grid system will connect to your existing utility power and can reduce your electricity bills through net metering where available.');
+    } else if (calculationResult.systemType === 'off-grid') {
+      doc.fontSize(12).text('This off-grid system is designed to be completely independent from the utility grid with battery storage for energy during non-sunlight hours.');
+    } else if (calculationResult.systemType === 'hybrid') {
+      doc.fontSize(12).text('This hybrid system combines grid connection with battery storage, providing backup power during outages while still allowing grid connection for stability.');
+    }
+    
+    if (calculationResult.budgetConstrained) {
+      doc.moveDown();
+      doc.fontSize(12).text('Note: System has been scaled to fit within your budget constraints.');
+    }
+    
+    // Add footer
+    doc.moveDown(2);
+    doc.fontSize(10).text(`Generated on ${new Date().toLocaleDateString()}`, { align: 'center' });
+    doc.text('This is an estimate only. Please consult with a solar professional for a detailed assessment.', { align: 'center' });
+    
+    // Finalize PDF
+    doc.end();
+  } catch (error) {
+    console.error('PDF generation error:', error);
+    res.status(500).json({ message: 'Error generating PDF report', error: error.message });
   }
-  doc.text(`Number of Panels: ${data.numberOfPanels} (${data.panelWattage}W each)`)
-    .text(`Estimated Total Cost: KSh ${data.estimatedCost.total.toLocaleString()}`)
-    .moveDown()
-    .text('Cost Breakdown:')
-    .text(`- Panels: KSh ${data.estimatedCost.panels.toLocaleString()}`)
-    .text(`- Inverter: KSh ${data.estimatedCost.inverter.toLocaleString()}`)
-    .text(`- Charge Controller: KSh ${data.estimatedCost.chargeController.toLocaleString()}`);
-  if (data.estimatedCost.batteries > 0) {
-    doc.text(`- Batteries: KSh ${data.estimatedCost.batteries.toLocaleString()}`);
-  }
-  doc.end();
 });
 
 // Start the server

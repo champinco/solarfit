@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
 import axios from 'axios';
 
@@ -19,7 +19,27 @@ function HomePage() {
   const [userType, setUserType] = useState('residential');
   const [autonomyDays, setAutonomyDays] = useState(1);
   const [budget, setBudget] = useState('');
-  const [appliances, setAppliances] = useState([]); // New: Appliance list
+  const [appliances, setAppliances] = useState([]);
+  const [applianceCategories, setApplianceCategories] = useState({
+    residential: [],
+    commercial: [],
+    industrial: []
+  });
+
+  // Fetch appliance list on component mount
+  useEffect(() => {
+    const fetchAppliances = async () => {
+      try {
+        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000';
+        const response = await axios.get(`${backendUrl}/api/appliances`);
+        setApplianceCategories(response.data);
+      } catch (error) {
+        console.error('Failed to fetch appliance list:', error);
+      }
+    };
+    
+    fetchAppliances();
+  }, []);
 
   // File Drop Handler
   const onDropAccepted = useCallback(async (acceptedFiles) => {
@@ -64,14 +84,40 @@ function HomePage() {
 
   // Appliance Management
   const addAppliance = () => {
-    setAppliances([...appliances, { name: '', wattage: '', hoursPerDay: '' }]);
+    const applianceOptions = applianceCategories[userType] || [];
+    if (applianceOptions.length === 0) return;
+    
+    setAppliances([...appliances, { 
+      name: applianceOptions[0].name, 
+      quantity: 1,
+      hoursPerDay: 1,
+      power: applianceOptions[0].power 
+    }]);
   };
 
   const updateAppliance = (index, field, value) => {
-    const updatedAppliances = appliances.map((appliance, i) =>
-      i === index ? { ...appliance, [field]: value } : appliance
-    );
+    const updatedAppliances = appliances.map((appliance, i) => {
+      if (i === index) {
+        const updatedAppliance = { ...appliance, [field]: value };
+        
+        // Update power if name changes
+        if (field === 'name') {
+          const selectedAppliance = applianceCategories[userType]?.find(a => a.name === value);
+          if (selectedAppliance) {
+            updatedAppliance.power = selectedAppliance.power;
+          }
+        }
+        
+        return updatedAppliance;
+      }
+      return appliance;
+    });
+    
     setAppliances(updatedAppliances);
+  };
+
+  const removeAppliance = (index) => {
+    setAppliances(appliances.filter((_, i) => i !== index));
   };
 
   // Calculation Handler
@@ -154,6 +200,22 @@ function HomePage() {
     backgroundColor: isDragActive ? '#f0f8ff' : '#fff',
     marginBottom: '20px',
   };
+  const buttonStyle = { 
+    padding: '10px', 
+    backgroundColor: '#007bff', 
+    color: '#fff', 
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer'
+  };
+  const removeButtonStyle = {
+    padding: '5px 10px',
+    backgroundColor: '#dc3545',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer'
+  };
 
   return (
     <div style={{ maxWidth: '800px', margin: '20px auto', padding: '30px', fontFamily: 'Arial, sans-serif', border: '1px solid #ddd', borderRadius: '8px' }}>
@@ -191,6 +253,21 @@ function HomePage() {
             </select>
           </div>
           <div style={formGroupStyle}>
+            <label style={labelStyle}>User Type:*</label>
+            <select 
+              value={userType} 
+              onChange={(e) => {
+                setUserType(e.target.value);
+                setAppliances([]); // Clear appliances when user type changes
+              }} 
+              style={selectStyle}
+            >
+              <option value="residential">Residential</option>
+              <option value="commercial">Commercial</option>
+              <option value="industrial">Industrial</option>
+            </select>
+          </div>
+          <div style={formGroupStyle}>
             <label style={labelStyle}>Avg. Monthly kWh:</label>
             <input type="number" value={avgMonthlyKwh} onChange={(e) => setAvgMonthlyKwh(e.target.value)} style={inputStyle} />
           </div>
@@ -204,38 +281,82 @@ function HomePage() {
               <input type="number" value={autonomyDays} onChange={(e) => setAutonomyDays(e.target.value)} style={inputStyle} min="1" />
             </div>
           )}
+          
           {/* Appliance Selection */}
-          <div style={{ gridColumn: '1 / -1' }}>
-            <label style={labelStyle}>Appliances (Optional):</label>
+          <div style={{ gridColumn: '1 / -1', marginTop: '20px' }}>
+            <h3 style={{ color: '#0056b3' }}>Appliances (Optional)</h3>
+            <p>Estimate your energy needs by adding appliances:</p>
+            
             {appliances.map((appliance, index) => (
-              <div key={index} style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
-                <input
-                  placeholder="Name"
+              <div key={index} style={{ display: 'flex', gap: '10px', marginBottom: '10px', alignItems: 'center' }}>
+                <select
                   value={appliance.name}
                   onChange={(e) => updateAppliance(index, 'name', e.target.value)}
-                  style={{ ...inputStyle, flex: 1 }}
-                />
-                <input
-                  type="number"
-                  placeholder="Wattage"
-                  value={appliance.wattage}
-                  onChange={(e) => updateAppliance(index, 'wattage', e.target.value)}
-                  style={{ ...inputStyle, width: '100px' }}
-                />
-                <input
-                  type="number"
-                  placeholder="Hours/Day"
-                  value={appliance.hoursPerDay}
-                  onChange={(e) => updateAppliance(index, 'hoursPerDay', e.target.value)}
-                  style={{ ...inputStyle, width: '100px' }}
-                />
+                  style={{ ...selectStyle, flex: 2 }}
+                >
+                  {applianceCategories[userType]?.map(app => (
+                    <option key={app.name} value={app.name}>{app.name} ({app.power}W)</option>
+                  ))}
+                </select>
+                <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
+                  <label style={{ fontSize: '0.8em' }}>Quantity</label>
+                  <input
+                    type="number"
+                    value={appliance.quantity}
+                    onChange={(e) => updateAppliance(index, 'quantity', parseInt(e.target.value) || 1)}
+                    min="1"
+                    style={{ ...inputStyle, padding: '5px' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
+                  <label style={{ fontSize: '0.8em' }}>Hours/Day</label>
+                  <input
+                    type="number"
+                    value={appliance.hoursPerDay}
+                    onChange={(e) => updateAppliance(index, 'hoursPerDay', parseInt(e.target.value) || 1)}
+                    min="1"
+                    max="24"
+                    style={{ ...inputStyle, padding: '5px' }}
+                  />
+                </div>
+                <button 
+                  onClick={() => removeAppliance(index)} 
+                  style={removeButtonStyle}
+                  aria-label="Remove appliance"
+                >
+                  X
+                </button>
               </div>
             ))}
-            <button onClick={addAppliance} style={{ padding: '5px 10px', backgroundColor: '#007bff', color: '#fff', border: 'none' }}>
+            
+            <button onClick={addAppliance} style={buttonStyle} disabled={!applianceCategories[userType]?.length}>
               Add Appliance
             </button>
+            
+            {appliances.length > 0 && (
+              <div style={{ marginTop: '15px', padding: '10px', backgroundColor: '#f9f9f9', borderRadius: '4px' }}>
+                <p><strong>Daily Consumption Estimate:</strong> {
+                  appliances.reduce((sum, app) => 
+                    sum + (app.power/1000 * app.quantity * app.hoursPerDay), 0).toFixed(2)
+                } kWh</p>
+              </div>
+            )}
           </div>
-          <button onClick={handleCalculateClick} disabled={calculating} style={{ gridColumn: '1 / -1', padding: '15px', backgroundColor: calculating ? '#ccc' : '#28a745', color: '#fff', border: 'none' }}>
+          
+          <button 
+            onClick={handleCalculateClick} 
+            disabled={calculating} 
+            style={{ 
+              gridColumn: '1 / -1', 
+              padding: '15px', 
+              backgroundColor: calculating ? '#ccc' : '#28a745', 
+              color: '#fff', 
+              border: 'none',
+              borderRadius: '4px',
+              cursor: calculating ? 'not-allowed' : 'pointer',
+              marginTop: '20px'
+            }}
+          >
             {calculating ? 'Calculating...' : 'Calculate'}
           </button>
         </div>
@@ -247,12 +368,31 @@ function HomePage() {
         {calculating && <p>Calculating...</p>}
         {calculationError && <p style={{ color: 'red' }}>{calculationError}</p>}
         {calculationResult && !calculating && !calculationError && (
-          <div style={{ padding: '20px', backgroundColor: '#f0fff0', border: '1px solid #ccc' }}>
+          <div style={{ padding: '20px', backgroundColor: '#f0fff0', border: '1px solid #ccc', borderRadius: '8px' }}>
+            <h3>System Specifications</h3>
             <p><strong>PV Size:</strong> {calculationResult.pvSizeKwP?.toFixed(2) ?? 'N/A'} kWp</p>
+            <p><strong>Number of Panels:</strong> {calculationResult.numberOfPanels ?? 'N/A'} ({calculationResult.panelWattage ?? 'N/A'}W each)</p>
             <p><strong>Inverter Size:</strong> {calculationResult.inverterSizeKva?.toFixed(2) ?? 'N/A'} kVA</p>
-            {calculationResult.batterySizeKwh && <p><strong>Battery:</strong> {calculationResult.batterySizeKwh.toFixed(2)} kWh</p>}
-            <p><strong>Cost:</strong> {calculationResult.estimatedCost?.toLocaleString() ?? 'N/A'}</p>
-            <button onClick={handleGeneratePDF} style={{ padding: '10px', backgroundColor: '#007bff', color: '#fff', border: 'none' }}>
+            {calculationResult.batterySizeKwh && (
+              <>
+                <p><strong>Battery:</strong> {calculationResult.batterySizeKwh.toFixed(2)} kWh</p>
+                <p><strong>Number of Batteries:</strong> {calculationResult.numberOfBatteries ?? 'N/A'}</p>
+              </>
+            )}
+            
+            <h3>Cost Breakdown</h3>
+            <p><strong>Panels:</strong> {calculationResult.estimatedCost?.panels?.toLocaleString() ?? 'N/A'}</p>
+            <p><strong>Inverter:</strong> {calculationResult.estimatedCost?.inverter?.toLocaleString() ?? 'N/A'}</p>
+            {calculationResult.estimatedCost?.batteries > 0 && (
+              <p><strong>Batteries:</strong> {calculationResult.estimatedCost?.batteries?.toLocaleString() ?? 'N/A'}</p>
+            )}
+            <p><strong>Charge Controller:</strong> {calculationResult.estimatedCost?.chargeController?.toLocaleString() ?? 'N/A'}</p>
+            <p><strong>Total Cost:</strong> {calculationResult.estimatedCost?.total?.toLocaleString() ?? 'N/A'}</p>
+            
+            <button 
+              onClick={handleGeneratePDF} 
+              style={{ padding: '10px', backgroundColor: '#007bff', color: '#fff', border: 'none', borderRadius: '4px', marginTop: '15px' }}
+            >
               Generate PDF
             </button>
           </div>
