@@ -6,7 +6,6 @@ import { Bar } from 'react-chartjs-2';
 import Chart from 'chart.js/auto';
 
 function HomePage() {
-  // State Variables - Initialize with empty values for server-side rendering
   const [token, setToken] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -28,21 +27,16 @@ function HomePage() {
   const [budget, setBudget] = useState('');
   const [appliances, setAppliances] = useState([]);
   const [applianceCategories, setApplianceCategories] = useState({ residential: [], commercial: [], industrial: [] });
-  const [tilt, setTilt] = useState(0); // Feature 2
-  const [azimuth, setAzimuth] = useState(180); // Feature 2
-  const [shading, setShading] = useState(0); // Feature 2
+  const [tilt, setTilt] = useState(0);
+  const [azimuth, setAzimuth] = useState(180);
+  const [shading, setShading] = useState(0);
 
-  // Check for token in localStorage after component mounts (client-side only)
   useEffect(() => {
-    const storedToken = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-    if (storedToken) {
+    if (typeof window !== 'undefined') {
+      const storedToken = localStorage.getItem('token') || '';
       setToken(storedToken);
-      setIsLoggedIn(true);
+      setIsLoggedIn(!!storedToken);
     }
-  }, []);
-
-  // Fetch Appliances
-  useEffect(() => {
     const fetchAppliances = async () => {
       try {
         const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000';
@@ -55,7 +49,7 @@ function HomePage() {
     fetchAppliances();
   }, []);
 
-  // Feature 1: OCR with Tesseract.js
+  // Improved OCR Extraction
   const onDropAccepted = useCallback(async (acceptedFiles) => {
     if (uploading) return;
     const file = acceptedFiles[0];
@@ -67,18 +61,22 @@ function HomePage() {
 
     try {
       const { data: { text } } = await Tesseract.recognize(file, 'eng');
-      const consumptionMatch = text.match(/Consumption:\s*(\d+)\s*kWh/i);
-      const amountMatch = text.match(/Total Amount:\s*(\d+)/i);
+      console.log('OCR Text:', text); // Debug: Log raw text
+
+      // Flexible regex patterns
+      const consumptionMatch = text.match(/(\d+\.?\d*)\s*(kWh|KWH|kw\s*h|units)/i);
+      const amountMatch = text.match(/(?:total|amount|bill)\s*[:=]?\s*(\d+\.?\d*)/i);
+
       const extractedData = {
-        consumptionKwh: consumptionMatch ? parseInt(consumptionMatch[1]) : null,
-        totalAmount: amountMatch ? parseInt(amountMatch[1]) : null,
+        consumptionKwh: consumptionMatch ? parseFloat(consumptionMatch[1]) : null,
+        totalAmount: amountMatch ? parseFloat(amountMatch[1]) : null,
       };
       setExtractedData(extractedData);
       if (extractedData.consumptionKwh) setAvgMonthlyKwh(extractedData.consumptionKwh.toString());
       if (extractedData.totalAmount) setAvgMonthlyBill(extractedData.totalAmount.toString());
     } catch (error) {
       console.error('OCR error:', error);
-      alert('Failed to extract data from the bill image.');
+      alert('Failed to process the bill image.');
     } finally {
       setUploading(false);
     }
@@ -88,11 +86,10 @@ function HomePage() {
     accept: { 'image/png': ['.png'], 'image/jpeg': ['.jpeg', '.jpg'] },
     maxFiles: 1,
     onDropAccepted,
-    onDropRejected: (rejectedFiles) => alert(rejectedFiles[0]?.errors[0]?.message || 'File rejected. Use PNG/JPG.'),
+    onDropRejected: (rejectedFiles) => alert(rejectedFiles[0]?.errors[0]?.message || 'File rejected.'),
     disabled: uploading,
   });
 
-  // Feature 3: Custom Appliance Entry
   const addAppliance = () => {
     const applianceOptions = applianceCategories[userType] || [];
     if (applianceOptions.length === 0) return;
@@ -116,7 +113,6 @@ function HomePage() {
 
   const removeAppliance = (index) => setAppliances(appliances.filter((_, i) => i !== index));
 
-  // Feature 4: Authentication
   const handleSignup = async () => {
     try {
       const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000';
@@ -146,9 +142,7 @@ function HomePage() {
 
   const handleLogout = () => {
     setToken('');
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('token');
-    }
+    localStorage.removeItem('token');
     setIsLoggedIn(false);
     setCalculationResult(null);
   };
@@ -166,7 +160,6 @@ function HomePage() {
     }
   };
 
-  // Calculation Handler (Features 2, 5)
   const handleCalculateClick = async () => {
     setCalculating(true);
     setCalculationResult(null);
@@ -199,9 +192,9 @@ function HomePage() {
         quantity: a.quantity,
         hoursPerDay: a.hoursPerDay,
       })) : null,
-      tilt: parseFloat(tilt), // Feature 2
-      azimuth: parseFloat(azimuth), // Feature 2
-      shading: parseFloat(shading), // Feature 2
+      tilt: parseFloat(tilt),
+      azimuth: parseFloat(azimuth),
+      shading: parseFloat(shading),
     };
 
     try {
@@ -215,7 +208,6 @@ function HomePage() {
     }
   };
 
-  // PDF Generation
   const handleGeneratePDF = async () => {
     if (!calculationResult) {
       alert('Please calculate the system first.');
@@ -269,18 +261,11 @@ function HomePage() {
 
   return (
     <div style={{ maxWidth: '800px', margin: '20px auto', padding: '30px', fontFamily: 'Arial, sans-serif', border: '1px solid #ddd', borderRadius: '8px' }}>
-      {/* Authentication Section (Feature 4) */}
       {!isLoggedIn ? (
         <section>
           <h2 style={{ textAlign: 'center', color: '#0056b3' }}>Login/Signup</h2>
-          <div style={formGroupStyle}>
-            <label style={labelStyle}>Username:</label>
-            <input value={username} onChange={(e) => setUsername(e.target.value)} style={inputStyle} />
-          </div>
-          <div style={formGroupStyle}>
-            <label style={labelStyle}>Password:</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} style={inputStyle} />
-          </div>
+          <div style={formGroupStyle}><label style={labelStyle}>Username:</label><input value={username} onChange={(e) => setUsername(e.target.value)} style={inputStyle} /></div>
+          <div style={formGroupStyle}><label style={labelStyle}>Password:</label><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} style={inputStyle} /></div>
           <button onClick={handleSignup} style={buttonStyle}>Signup</button>
           <button onClick={handleLogin} style={{ ...buttonStyle, marginLeft: '10px' }}>Login</button>
         </section>
@@ -291,7 +276,6 @@ function HomePage() {
         </section>
       )}
 
-      {/* Bill Upload Section (Feature 1) */}
       <section style={{ marginTop: '40px' }}>
         <h2 style={{ textAlign: 'center', color: '#0056b3' }}>1. Upload Your Bill (Optional)</h2>
         <div {...getRootProps()} style={dropzoneStyle}>
@@ -308,7 +292,6 @@ function HomePage() {
         )}
       </section>
 
-      {/* Sizing Inputs Section (Features 2, 3) */}
       <section style={{ marginTop: '40px', borderTop: '2px solid #0056b3', paddingTop: '20px' }}>
         <h2 style={{ textAlign: 'center', color: '#0056b3' }}>2. Enter Sizing Details</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px' }}>
@@ -318,12 +301,10 @@ function HomePage() {
           <div style={formGroupStyle}><label style={labelStyle}>Avg. Monthly kWh:</label><input type="number" value={avgMonthlyKwh} onChange={(e) => setAvgMonthlyKwh(e.target.value)} style={inputStyle} /></div>
           <div style={formGroupStyle}><label style={labelStyle}>Avg. Monthly Bill:</label><input type="number" value={avgMonthlyBill} onChange={(e) => setAvgMonthlyBill(e.target.value)} style={inputStyle} /></div>
           {systemType !== 'on-grid' && <div style={formGroupStyle}><label style={labelStyle}>Autonomy Days:*</label><input type="number" value={autonomyDays} onChange={(e) => setAutonomyDays(e.target.value)} style={inputStyle} min="1" /></div>}
-          {/* Feature 2: Advanced PVGIS Inputs */}
           <div style={formGroupStyle}><label style={labelStyle}>Panel Tilt (degrees):</label><input type="number" value={tilt} onChange={(e) => setTilt(e.target.value)} style={inputStyle} /></div>
           <div style={formGroupStyle}><label style={labelStyle}>Panel Azimuth (degrees):</label><input type="number" value={azimuth} onChange={(e) => setAzimuth(e.target.value)} style={inputStyle} /></div>
           <div style={formGroupStyle}><label style={labelStyle}>Shading (%):</label><input type="number" value={shading} onChange={(e) => setShading(e.target.value)} style={inputStyle} min="0" max="100" /></div>
 
-          {/* Appliance Selection (Feature 3) */}
           <div style={{ gridColumn: '1 / -1', marginTop: '20px' }}>
             <h3 style={{ color: '#0056b3' }}>Appliances (Optional)</h3>
             {appliances.map((appliance, index) => (
@@ -357,7 +338,6 @@ function HomePage() {
         </div>
       </section>
 
-      {/* Results Section (Feature 6) */}
       <section style={{ marginTop: '40px', borderTop: '2px solid #28a745', paddingTop: '20px' }}>
         <h2 style={{ textAlign: 'center', color: '#1a682c' }}>3. Calculation Results</h2>
         {calculating && <p>Calculating...</p>}
@@ -381,7 +361,6 @@ function HomePage() {
             <p><strong>Charge Controller:</strong> {calculationResult.estimatedCost?.chargeController?.toLocaleString() ?? 'N/A'}</p>
             <p><strong>Total Cost:</strong> {calculationResult.estimatedCost?.total?.toLocaleString() ?? 'N/A'}</p>
 
-            {/* Feature 6: Bar Graph */}
             <h3>Monthly Energy Production</h3>
             <Bar
               data={{
