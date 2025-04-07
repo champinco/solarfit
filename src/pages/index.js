@@ -1,65 +1,83 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import { useDropzone } from 'react-dropzone';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
+// import { useDropzone } from 'react-dropzone'; // Keep if using OCR
 import axios from 'axios';
-import Tesseract from 'tesseract.js';
+// import Tesseract from 'tesseract.js'; // Keep if using OCR
 import dynamic from 'next/dynamic';
-import 'chart.js/auto';
+import 'chart.js/auto'; // Required for Chart.js v3+
 
-// Dynamically import the Bar component, disabling SSR
+// Dynamically import chart components, disabling SSR
 const Bar = dynamic(() => import('react-chartjs-2').then((mod) => mod.Bar), { ssr: false });
+const Pie = dynamic(() => import('react-chartjs-2').then((mod) => mod.Pie), { ssr: false });
 
 function HomePage() {
+    // --- State Variables ---
+
     // Auth State
     const [token, setToken] = useState('');
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
+    const [authMessage, setAuthMessage] = useState('');
     const [isLoggedIn, setIsLoggedIn] = useState(false);
 
-    // OCR State
-    const [uploading, setUploading] = useState(false);
-    const [ocrProgress, setOcrProgress] = useState(0);
-    const [ocrText, setOcrText] = useState('');
-    const [extractedData, setExtractedData] = useState(null);
-    const [lastUploadFilename, setLastUploadFilename] = useState('');
+    // // OCR State (Optional - Keep if using)
+    // const [uploading, setUploading] = useState(false);
+    // const [ocrProgress, setOcrProgress] = useState(0);
+    // const [ocrText, setOcrText] = useState('');
+    // const [extractedData, setExtractedData] = useState(null);
+    // const [lastUploadFilename, setLastUploadFilename] = useState('');
 
-    // Input Parameter State
-    const [location, setLocation] = useState('');
-    const [systemType, setSystemType] = useState('on-grid');
-    const [roofArea, setRoofArea] = useState('');
-    const [roofType, setRoofType] = useState('iron-sheets');
-    const [avgMonthlyKwh, setAvgMonthlyKwh] = useState('');
-    const [avgMonthlyBill, setAvgMonthlyBill] = useState('');
-    const [electricityPricePerKwh, setElectricityPricePerKwh] = useState('');
-    const [userType, setUserType] = useState('residential');
-    const [autonomyDays, setAutonomyDays] = useState(1);
-    const [depthOfDischarge, setDepthOfDischarge] = useState(0.8);
-    const [budget, setBudget] = useState('');
-    const [appliances, setAppliances] = useState([]);
-    const [applianceCategories, setApplianceCategories] = useState({
-        residential: [],
-        commercial: [],
-        industrial: [],
-    });
-    const [tilt, setTilt] = useState(15);
-    const [azimuth, setAzimuth] = useState(180);
-    const [shading, setShading] = useState(0);
-    const [panelWattage, setPanelWattage] = useState(450);
+    // Input Parameter State (Organized)
+    const [location, setLocation] = useState(''); // Required
+    const [systemType, setSystemType] = useState('on-grid'); // Required: on-grid, off-grid, hybrid
+    const [userType, setUserType] = useState('residential'); // Required: residential, commercial, industrial
+    const [systemVoltage, setSystemVoltage] = useState(48); // Required for off-grid/hybrid
+
+    const [avgMonthlyKwh, setAvgMonthlyKwh] = useState(''); // Energy Option 1
+    const [avgMonthlyBill, setAvgMonthlyBill] = useState(''); // Energy Option 2
+    const [electricityPricePerKwh, setElectricityPricePerKwh] = useState(''); // Required if using bill, also for payback
+
+    const [autonomyDays, setAutonomyDays] = useState(1.5); // For off-grid/hybrid
+    const [depthOfDischarge, setDepthOfDischarge] = useState(0.8); // For off-grid/hybrid (80%)
+
+    const [panelWattage, setPanelWattage] = useState(550); // Panel config
+    const [tilt, setTilt] = useState(15);              // Panel config
+    const [azimuth, setAzimuth] = useState(180);       // Panel config (180=South)
+    const [shading, setShading] = useState(0);         // Panel config (%)
+
+    const [appliances, setAppliances] = useState([]); // Energy Option 3
+    const [applianceCategories, setApplianceCategories] = useState({ residential: [], commercial: [], industrial: [] });
+
+    const [budget, setBudget] = useState(''); // Optional budget constraint
+    // const [roofArea, setRoofArea] = useState(''); // Optional roof area (future use)
 
     // Calculation Result State
     const [calculationResult, setCalculationResult] = useState(null);
     const [calculating, setCalculating] = useState(false);
     const [calculationError, setCalculationError] = useState('');
-    const [calculationInputParams, setCalculationInputParams] = useState(null);
+    const [calculationInputParams, setCalculationInputParams] = useState(null); // Store inputs used for saving/PDF
+
+    // Other UI State
+    const [showAdvanced, setShowAdvanced] = useState(false); // Toggle for less common inputs
+    const [savedCalculations, setSavedCalculations] = useState([]);
+    const [loadingSaved, setLoadingSaved] = useState(false);
+
 
     // Backend URL
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000';
 
+    // --- Effects ---
+
+    // Check local storage for token on mount
     useEffect(() => {
         if (typeof window !== 'undefined') {
             const storedToken = localStorage.getItem('token') || '';
             setToken(storedToken);
             setIsLoggedIn(!!storedToken);
         }
+    }, []);
+
+    // Fetch appliance list on mount
+    useEffect(() => {
         const fetchAppliances = async () => {
             try {
                 const response = await axios.get(`${backendUrl}/api/appliances`);
@@ -70,158 +88,44 @@ function HomePage() {
                 }
             } catch (error) {
                 console.error('Failed to fetch appliance list:', error);
+                // Handle error - maybe set a default list or show message
             }
         };
         fetchAppliances();
     }, [backendUrl]);
 
-    // OCR Extraction Function
-    const extractField = (text, labels, pattern = null) => {
-        if (!text) return null;
-        
-        const lines = text.split('\n').map((line) => line.trim()).filter((line) => line);
-        for (const label of labels) {
-            for (const line of lines) {
-                const labelRegex = new RegExp(label + '\\s*[:\\-]?\\s*', 'i');
-                const match = line.match(labelRegex);
-                if (match) {
-                    const afterLabel = line.substring(match.index + match[0].length).trim();
-                    if (pattern) {
-                        const valueMatch = afterLabel.match(pattern);
-                        if (valueMatch) return valueMatch[0];
-                    } else {
-                        return afterLabel;
-                    }
+    // Fetch saved calculations when logged in
+     useEffect(() => {
+        const fetchSavedCalculations = async () => {
+             if (isLoggedIn && token) {
+                 setLoadingSaved(true);
+                 try {
+                     const response = await axios.get(`${backendUrl}/api/calculations`, {
+                         headers: { Authorization: `Bearer ${token}` },
+                     });
+                     setSavedCalculations(response.data);
+                 } catch (error) {
+                     console.error('Failed to fetch saved calculations:', error);
+                      setAuthMessage("Could not load saved calculations.");
+                     // If token is invalid/expired, log out
+                      if (error.response?.status === 400 || error.response?.status === 401) {
+                         handleLogout();
+                     }
+                 } finally {
+                    setLoadingSaved(false);
                 }
+            } else {
+                 setSavedCalculations([]); // Clear if not logged in
             }
-        }
-        return null;
-    };
+         };
+        fetchSavedCalculations();
+    }, [isLoggedIn, token, backendUrl]); // Re-fetch if login status changes
 
-    const onDropAccepted = useCallback(
-        async (acceptedFiles) => {
-            if (uploading || !acceptedFiles || acceptedFiles.length === 0) return;
-            
-            const file = acceptedFiles[0];
-            setUploading(true);
-            setOcrProgress(0);
-            setOcrText('');
-            setExtractedData(null);
-            setCalculationResult(null);
-            setCalculationError('');
-            setLastUploadFilename(file.name);
+    // --- Event Handlers ---
 
-            try {
-                const {
-                    data: { text },
-                } = await Tesseract.recognize(file, 'eng', {
-                    logger: (m) => {
-                        if (m.status === 'recognizing text') {
-                            setOcrProgress(Math.round(m.progress * 100));
-                        }
-                    },
-                });
-                console.log('OCR Raw Text:', text);
-                setOcrText(text);
-
-                const dateLabels = ['Issue Date', 'Bill Date', 'Date', 'Statement Date'];
-                const nameLabels = ['Customer Name', 'Account Name', 'Name', 'Billing Name'];
-                const locationLabels = ['Service Address', 'Location', 'Supply Location', 'Address'];
-                const consumptionLabels = ['Total Consumption', 'Consumption', 'Units Consumed', 'Energy Used', 'High Rate'];
-                const amountLabels = ['Total Amount Due', 'Amount Payable', 'Total Bill', 'Balance', 'TOTAL AMOUNT PAYABLE'];
-
-                const datePattern =
-                    /\d{2}\/\d{2}\/\d{4}|\d{4}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}|\d{2}\s*\/\s*\d{2}\s*\/\s*\d{4}/i;
-                const consumptionPattern = /\d{1,6}(?:,\d{3})*(?:\.\d+)?\s*(kWh|KWH|kw\s*h|units)/i;
-                const amountPattern = /(?:KES|Ksh)?\s*\d{1,3}(?:,\d{3})*(?:\.\d+)?/i;
-
-                const issueDate = extractField(text, dateLabels, datePattern);
-                const customerName = extractField(text, nameLabels);
-                const billLocation = extractField(text, locationLabels);
-                
-                // Try to extract consumption with pattern first
-                let consumptionStr = extractField(text, consumptionLabels, consumptionPattern);
-                let consumptionKwh = null;
-                
-                // If pattern matching fails, try to find numbers near consumption labels
-                if (!consumptionStr) {
-                    for (const label of consumptionLabels) {
-                        const regex = new RegExp(`${label}\\s*[:\\-]?\\s*(\\d{1,6}(?:,\\d{3})*(?:\\.\\d+)?)`, 'i');
-                        const match = text.match(regex);
-                        if (match && match[1]) {
-                            consumptionStr = match[1];
-                            break;
-                        }
-                    }
-                }
-                
-                // Parse the consumption value if found
-                if (consumptionStr) {
-                    // Extract just the numeric part
-                    const numericMatch = consumptionStr.match(/\d{1,6}(?:,\d{3})*(?:\.\d+)?/);
-                    if (numericMatch) {
-                        consumptionKwh = parseFloat(numericMatch[0].replace(/,/g, ''));
-                    }
-                }
-                
-                // Try to extract amount with pattern first
-                let amountStr = extractField(text, amountLabels, amountPattern);
-                let totalAmount = null;
-                
-                // If pattern matching fails, try to find numbers near amount labels
-                if (!amountStr) {
-                    for (const label of amountLabels) {
-                        const regex = new RegExp(`${label}\\s*[:\\-]?\\s*((?:KES|Ksh)?\\s*\\d{1,3}(?:,\\d{3})*(?:\\.\\d+)?)`, 'i');
-                        const match = text.match(regex);
-                        if (match && match[1]) {
-                            amountStr = match[1];
-                            break;
-                        }
-                    }
-                }
-                
-                // Parse the amount value if found
-                if (amountStr) {
-                    // Extract just the numeric part
-                    const numericMatch = amountStr.match(/\d{1,3}(?:,\d{3})*(?:\.\d+)?/);
-                    if (numericMatch) {
-                        totalAmount = parseFloat(numericMatch[0].replace(/,/g, ''));
-                    }
-                }
-
-                const extracted = {
-                    issueDate,
-                    customerName,
-                    billLocation,
-                    consumptionKwh,
-                    totalAmount,
-                };
-                setExtractedData(extracted);
-                console.log('Extracted Data:', extracted);
-
-                if (!location && billLocation) setLocation(`${billLocation}, Kenya`);
-                if (!avgMonthlyKwh && consumptionKwh) setAvgMonthlyKwh(consumptionKwh.toString());
-                if (!avgMonthlyBill && totalAmount) setAvgMonthlyBill(totalAmount.toString());
-                if (!electricityPricePerKwh) setElectricityPricePerKwh('22'); // Default value for Kenya
-            } catch (error) {
-                console.error('OCR error:', error);
-                alert('Failed to process the bill image.');
-                setCalculationError('OCR failed. Please enter usage manually.');
-            } finally {
-                setUploading(false);
-                setOcrProgress(100);
-            }
-        },
-        [uploading, location, avgMonthlyKwh, avgMonthlyBill]
-    );
-
-    const { getRootProps, getInputProps, isDragActive } = useDropzone({
-        accept: { 'image/png': ['.png'], 'image/jpeg': ['.jpeg', '.jpg'] },
-        maxFiles: 1,
-        onDropAccepted,
-        onDropRejected: (rejectedFiles) => alert(rejectedFiles[0]?.errors[0]?.message || 'File type not accepted.'),
-        disabled: uploading,
-    });
+    // OCR Handler (Keep if using)
+    // const onDropAccepted = useCallback(async (acceptedFiles) => { ... }, []);
+    // const { getRootProps, getInputProps, isDragActive } = useDropzone({ ... });
 
     // Appliance Management
     const addAppliance = () => {
@@ -230,84 +134,92 @@ function HomePage() {
             alert(`Appliance list for ${userType} is empty or not loaded.`);
             return;
         }
-        setAppliances([...appliances, { name: 'custom', customName: '', power: 0, quantity: 1, hoursPerDay: 1 }]);
+        // Add a new blank appliance row
+        setAppliances([...appliances, { id: Date.now(), name: 'custom', customName: '', power: '', quantity: 1, hoursPerDay: 1 }]);
     };
 
-    const updateAppliance = (index, field, value) => {
-        let parsedValue = value;
-        if (field === 'power' || field === 'quantity' || field === 'hoursPerDay') {
-            parsedValue = parseInt(value, 10);
-            if (isNaN(parsedValue) || parsedValue < (field === 'power' ? 0 : 1)) {
-                parsedValue = field === 'power' ? 0 : 1;
-            }
-        }
-        if (field === 'hoursPerDay' && parsedValue > 24) parsedValue = 24;
+    const updateAppliance = (id, field, value) => {
+        setAppliances(prevAppliances =>
+            prevAppliances.map(appliance => {
+                if (appliance.id === id) {
+                    const updatedAppliance = { ...appliance, [field]: value };
 
-        const updatedAppliances = appliances.map((appliance, i) => {
-            if (i === index) {
-                const updatedAppliance = { ...appliance, [field]: parsedValue };
-                if (field === 'name' && value !== 'custom') {
-                    const selectedAppliance = (applianceCategories[userType] || []).find((a) => a.name === value);
-                    if (selectedAppliance) {
-                        updatedAppliance.power = selectedAppliance.power;
-                        updatedAppliance.customName = '';
+                    // If selecting a preset appliance, update its power automatically
+                    if (field === 'name' && value !== 'custom') {
+                        const selectedPreset = (applianceCategories[userType] || []).find(a => a.name === value);
+                        if (selectedPreset) {
+                            updatedAppliance.power = selectedPreset.power || '';
+                            updatedAppliance.customName = ''; // Clear custom name if preset selected
+                        }
                     }
+                     // Basic validation for numbers
+                     if (field === 'power' || field === 'quantity' || field === 'hoursPerDay') {
+                         let numValue = parseFloat(value);
+                          if (isNaN(numValue) || numValue < (field === 'power' ? 0 : 1) ) {
+                             // Keep empty string or revert maybe? Or set to min? Let's allow empty temporarily.
+                             // numValue = (field === 'power' ? 0 : 1);
+                          } else {
+                             if (field === 'hoursPerDay' && numValue > 24) numValue = 24;
+                              updatedAppliance[field] = numValue; // Store the valid number
+                          }
+                    }
+
+                    return updatedAppliance;
                 }
-                return updatedAppliance;
-            }
-            return appliance;
-        });
-        setAppliances(updatedAppliances);
+                return appliance;
+            })
+        );
     };
 
-    const removeAppliance = (index) => setAppliances(appliances.filter((_, i) => i !== index));
+    const removeAppliance = (id) => setAppliances(appliances.filter(app => app.id !== id));
 
-    const calculateDailyApplianceKwh = () => {
+    // Calculate total daily kWh from the appliance list
+    const calculateDailyApplianceKwh = useMemo(() => {
         return appliances.reduce((sum, app) => {
-            const powerW = app.power || 0;
-            const quantity = app.quantity || 1;
-            const hours = app.hoursPerDay || 0;
-            return sum + (powerW / 1000) * quantity * hours;
+            const powerW = parseFloat(app.power) || 0;
+            const quantity = parseInt(app.quantity) || 0; // Treat 0 quantity as 0 power contribution
+            const hours = parseFloat(app.hoursPerDay) || 0;
+            if (powerW > 0 && quantity > 0 && hours > 0) {
+                return sum + (powerW / 1000) * quantity * hours;
+            }
+            return sum;
         }, 0);
-    };
+    }, [appliances]); // Recalculate only when appliances change
 
     // Auth Handlers
-    const handleSignup = async () => {
-        if (!username || !password) {
-            alert('Please enter both username and password');
+    const handleAuthAction = async (action) => {
+         setAuthMessage(''); // Clear previous messages
+         if (!username || !password) {
+            setAuthMessage('Please enter both username and password.');
             return;
-        }
-        
-        try {
-            await axios.post(`${backendUrl}/api/signup`, { username, password });
-            alert('Signup successful! Please log in.');
-            setUsername('');
-            setPassword('');
-        } catch (error) {
-            console.error('Signup failed:', error.response || error);
-            alert(`Signup failed: ${error.response?.data?.message || error.message}`);
-        }
-    };
+         }
 
-    const handleLogin = async () => {
-        if (!username || !password) {
-            alert('Please enter both username and password');
-            return;
-        }
-        
-        try {
-            const response = await axios.post(`${backendUrl}/api/login`, { username, password });
-            const { token } = response.data;
-            setToken(token);
-            localStorage.setItem('token', token);
-            setIsLoggedIn(true);
-            setUsername('');
-            setPassword('');
+         try {
+             const url = `${backendUrl}/api/${action}`; // action is 'login' or 'signup'
+             const response = await axios.post(url, { username, password });
+
+             if (action === 'signup') {
+                 setAuthMessage(response.data.message || 'Signup successful! Please log in.');
+                 setUsername(''); // Clear fields on successful signup
+                 setPassword('');
+             } else { // Login
+                const { token } = response.data;
+                if (!token) throw new Error("Login failed: No token received.");
+                 setToken(token);
+                 localStorage.setItem('token', token);
+                 setIsLoggedIn(true);
+                setAuthMessage('Login successful!');
+                 setUsername('');
+                 setPassword('');
+            }
         } catch (error) {
-            console.error('Login failed:', error.response || error);
-            alert(`Login failed: ${error.response?.data?.message || error.message}`);
+            console.error(`${action} failed:`, error.response?.data || error.message);
+            setAuthMessage(`Error: ${error.response?.data?.message || error.message || 'An unexpected error occurred.'}`);
+            setIsLoggedIn(false); // Ensure logged out state on error
+            localStorage.removeItem('token');
+            setToken('');
         }
-    };
+     };
 
     const handleLogout = () => {
         setToken('');
@@ -316,931 +228,643 @@ function HomePage() {
         setCalculationResult(null);
         setUsername('');
         setPassword('');
+        setAuthMessage('Logged out successfully.');
+        setSavedCalculations([]); // Clear saved calculations on logout
     };
 
-    // Calculation & Results
+    // --- Main Calculation Logic ---
     const handleCalculateClick = async () => {
         setCalculating(true);
         setCalculationResult(null);
         setCalculationError('');
-        setCalculationInputParams(null);
+        setCalculationInputParams(null); // Reset input params cache
 
-        // Validate required fields
-        if (!location) {
-            setCalculationError('Project Location is required.');
-            setCalculating(false);
-            return;
+        // --- Frontend Validation ---
+        const errors = [];
+        if (!location.trim()) errors.push("Project Location is required.");
+        if (!electricityPricePerKwh || parseFloat(electricityPricePerKwh) <= 0) {
+            errors.push("Valid Electricity Price (> 0 KES/kWh) is required for cost savings calculations.");
         }
-        
-        // Validate energy information is provided
         const energyProvided = avgMonthlyKwh || avgMonthlyBill || appliances.length > 0;
-        if (!energyProvided) {
-            setCalculationError('Please provide energy usage: Avg. Monthly kWh, Avg. Monthly Bill, or appliances.');
-            setCalculating(false);
-            return;
-        }
-        
-        // Validate off-grid/hybrid system parameters
-        if (systemType !== 'on-grid' && (!autonomyDays || autonomyDays < 1)) {
-            setCalculationError('Autonomy days (>= 1) are required for off-grid/hybrid systems.');
-            setCalculating(false);
-            return;
-        }
-        if (systemType !== 'on-grid' && (!depthOfDischarge || depthOfDischarge <= 0 || depthOfDischarge > 1)) {
-            setCalculationError('Valid Battery Depth of Discharge (e.g., 0.8 for 80%) is required.');
-            setCalculating(false);
-            return;
-        }
-        
-        // Validate panel wattage
-        if (!panelWattage || panelWattage <= 0 || panelWattage > 1000) {
-            setCalculationError('Panel wattage must be between 1 and 1000 Wp.');
+        if (!energyProvided) errors.push("Please provide energy usage: Avg. Monthly kWh, Avg. Monthly Bill, or list your appliances.");
+
+        if (systemType !== 'on-grid') {
+             if (isNaN(parseFloat(autonomyDays)) || parseFloat(autonomyDays) < 0.5) errors.push("Autonomy days (>= 0.5) required for off-grid/hybrid.");
+            if (isNaN(parseFloat(depthOfDischarge)) || parseFloat(depthOfDischarge) <= 0.1 || parseFloat(depthOfDischarge) > 1) errors.push("Valid DoD (0.1-1.0) required for off-grid/hybrid.");
+             if (![12, 24, 48].includes(Number(systemVoltage))) errors.push("System Voltage (12, 24, or 48V) required for off-grid/hybrid.");
+         }
+          if (isNaN(parseInt(panelWattage)) || parseInt(panelWattage) < 50 || parseInt(panelWattage) > 1000) errors.push("Panel Wattage (50-1000 Wp) required.");
+
+
+        if (errors.length > 0) {
+            setCalculationError(`Please fix the following issues:\n- ${errors.join('\n- ')}`);
             setCalculating(false);
             return;
         }
 
-        // Prepare calculation parameters
+        // Prepare parameters object to send to backend
         const sizingParameters = {
-            location,
+            location: location.trim(),
             systemType,
-            roofArea: roofArea ? parseFloat(roofArea) : null,
-            roofType,
+            userType,
+            systemVoltage: Number(systemVoltage), // Send as number
+
+            // Energy Inputs (send non-empty values)
             avgMonthlyKwh: avgMonthlyKwh ? parseFloat(avgMonthlyKwh) : null,
             avgMonthlyBill: avgMonthlyBill ? parseFloat(avgMonthlyBill) : null,
-            electricityPricePerKwh: electricityPricePerKwh ? parseFloat(electricityPricePerKwh) : null,
-            userType,
-            autonomyDays: systemType !== 'on-grid' ? parseInt(autonomyDays) || 1 : null,
-            depthOfDischarge: systemType !== 'on-grid' ? parseFloat(depthOfDischarge) || 0.8 : null,
-            budget: budget ? parseFloat(budget) : null,
-            appliances:
-                appliances.length > 0
-                    ? appliances.map((a) => ({
-                          name: a.customName || a.name,
-                          power: a.power || 0,
-                          quantity: a.quantity || 1,
-                          hoursPerDay: a.hoursPerDay || 0,
-                      }))
-                    : null,
+             electricityPricePerKwh: parseFloat(electricityPricePerKwh), // Already validated > 0
+
+            // Appliances (filter out potentially incomplete/invalid ones before sending?)
+            appliances: appliances.length > 0 ? appliances.map(a => ({
+                name: a.customName || a.name,
+                 power: parseFloat(a.power) || 0, // Ensure power is a number
+                 quantity: parseInt(a.quantity) || 0,
+                 hoursPerDay: parseFloat(a.hoursPerDay) || 0,
+                 peakFactor: a.peakFactor || 1.5 // Send peak factor if you add it
+             })).filter(a => a.power > 0 && a.quantity > 0 && a.hoursPerDay > 0) // Only send valid appliances
+             : null,
+
+            // Off-grid / Hybrid Params
+             autonomyDays: systemType !== 'on-grid' ? parseFloat(autonomyDays) : null,
+            depthOfDischarge: systemType !== 'on-grid' ? parseFloat(depthOfDischarge) : null,
+
+            // Panel Config
+             panelWattage: parseInt(panelWattage),
             tilt: parseFloat(tilt) || 0,
             azimuth: parseFloat(azimuth) || 180,
             shading: parseFloat(shading) || 0,
-            panelWattage: parseInt(panelWattage) || 450,
+
+            // Optional
+             budget: budget ? parseFloat(budget) : null,
+            // roofArea: roofArea ? parseFloat(roofArea) : null, // If using roofArea later
         };
 
-        setCalculationInputParams(sizingParameters);
+        setCalculationInputParams(sizingParameters); // Store the params used for this calculation attempt
 
+        // --- API Call ---
         try {
-            console.log('Sending calculation request:', JSON.stringify(sizingParameters, null, 2));
+            console.log('Sending calculation request:', sizingParameters);
             const response = await axios.post(`${backendUrl}/api/calculate`, sizingParameters, {
-                timeout: 30000 // 30 second timeout for calculation
+                timeout: 45000 // 45 second timeout (PVGIS can be slow)
             });
-            console.log('Calculation response:', response.data);
-            setCalculationResult(response.data);
-        } catch (error) {
-            console.error('Calculation API error:', error.response || error);
-            let errorMessage = 'Calculation failed: ';
-            
-            if (error.response && error.response.data && error.response.data.message) {
-                errorMessage += error.response.data.message;
-            } else if (error.message) {
-                errorMessage += error.message;
-            } else {
-                errorMessage += 'Unknown error occurred.';
+            console.log('Calculation response received:', response.data);
+
+            if (!response.data || !response.data.pvSystem) {
+                 throw new Error("Received invalid data structure from server.");
             }
-            
+
+            setCalculationResult(response.data); // Store successful result
+
+        } catch (error) {
+            console.error('Calculation API error:', error);
+            let errorMessage = 'Calculation failed: ';
+            if (error.code === 'ECONNABORTED') {
+                 errorMessage += 'The request timed out. The server might be busy or the location APIs are slow. Please try again later.';
+            } else if (error.response?.data?.message) {
+                 errorMessage += error.response.data.message; // Use specific error from backend
+             } else if (error.message) {
+                 errorMessage += error.message;
+             } else {
+                 errorMessage += 'An unknown error occurred on the server.';
+             }
             setCalculationError(errorMessage);
         } finally {
             setCalculating(false);
         }
     };
 
+    // --- Helper Functions for Frontend ---
+
     const saveCalculation = async () => {
         if (!calculationResult || !isLoggedIn || !calculationInputParams) {
             alert('Cannot save: No calculation result, not logged in, or input parameters missing.');
             return;
         }
+        setAuthMessage('Saving calculation...');
         try {
-            const payload = {
-                calculationParams: calculationInputParams,
+             const payload = {
+                calculationParams: calculationInputParams, // Use the stored inputs
                 resultData: calculationResult,
             };
             await axios.post(`${backendUrl}/api/save-calculation`, payload, {
-                headers: { Authorization: `Bearer ${token}` },
+                 headers: { Authorization: `Bearer ${token}` },
             });
-            alert('Calculation saved successfully!');
-        } catch (error) {
-            console.error('Save calculation failed:', error.response || error);
-            alert(`Save failed: ${error.response?.data?.message || 'Please try again.'}`);
-        }
-    };
-
-    const handleGeneratePDF = async () => {
-        if (!calculationResult) {
-            alert('Please perform a calculation first.');
-            return;
-        }
-        try {
-            const response = await axios.post(`${backendUrl}/api/generate-pdf`, calculationResult, {
-                responseType: 'blob',
-                headers: { Accept: 'application/pdf' },
-                timeout: 30000 // 30 second timeout for PDF generation
-            });
-            const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
-            const link = document.createElement('a');
-            link.href = url;
-            const filename = `SolarReport_${calculationResult.location?.replace(/\s+/g, '_') || 'Details'}.pdf`;
-            link.setAttribute('download', filename);
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            window.URL.revokeObjectURL(url);
-        } catch (error) {
-            console.error('PDF generation failed:', error.response || error);
-            let errorMsg = 'PDF generation failed.';
-            if (error.response && error.response.data instanceof Blob && error.response.data.type === 'application/json') {
-                try {
-                    const errJson = JSON.parse(await error.response.data.text());
-                    errorMsg = `PDF generation failed: ${errJson.message || 'Server error'}`;
-                } catch (parseError) {
-                    errorMsg = 'PDF generation failed: Unable to parse error response.';
-                }
-            } else if (error.response?.data?.message) {
-                errorMsg = `PDF generation failed: ${error.response.data.message}`;
+             setAuthMessage('Calculation saved successfully!');
+            // Re-fetch saved calculations to update the list
+            if (token) {
+                const response = await axios.get(`${backendUrl}/api/calculations`, { headers: { Authorization: `Bearer ${token}` }});
+                 setSavedCalculations(response.data);
             }
-            alert(errorMsg);
-        }
+        } catch (error) {
+             console.error('Save calculation failed:', error.response || error);
+             const errMsg = error.response?.data?.message || 'Save failed. Please try again.';
+             setAuthMessage(`Save Error: ${errMsg}`);
+              if (error.response?.status === 400 || error.response?.status === 401) { // Handle bad/expired token
+                  handleLogout();
+              }
+         }
     };
 
-    // Styles
-    const pageStyle = {
-        maxWidth: '900px',
-        margin: '20px auto',
-        padding: '20px 40px',
-        fontFamily: '"Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
-        background: '#f9f9f9',
-        border: '1px solid #ddd',
-        borderRadius: '8px',
-        boxShadow: '0 2px 5px rgba(0,0,0,0.1)',
-    };
-    const sectionStyle = { marginTop: '40px', paddingTop: '20px', borderTop: '1px solid #eee' };
-    const formGroupStyle = { display: 'flex', flexDirection: 'column', marginBottom: '18px' };
-    const labelStyle = { marginBottom: '6px', fontWeight: '600', fontSize: '0.9em', color: '#333' };
-    const inputStyle = {
-        padding: '10px 12px',
-        border: '1px solid #ccc',
-        borderRadius: '4px',
-        fontSize: '1em',
-        width: '100%',
-        boxSizing: 'border-box',
-    };
-    const selectStyle = {
-        padding: '10px 12px',
-        border: '1px solid #ccc',
-        borderRadius: '4px',
-        fontSize: '1em',
-        width: '100%',
-        boxSizing: 'border-box',
-        background: '#fff',
-    };
-    const buttonStyle = {
-        padding: '10px 18px',
-        backgroundColor: '#007bff',
-        color: '#fff',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer',
-        fontSize: '1em',
-        transition: 'background-color 0.2s ease',
-    };
-    const buttonDisabledStyle = { ...buttonStyle, backgroundColor: '#ccc', cursor: 'not-allowed' };
-    const buttonSecondaryStyle = { ...buttonStyle, backgroundColor: '#6c757d' };
-    const buttonDangerStyle = { ...buttonStyle, backgroundColor: '#dc3545' };
-    const removeButtonStyle = {
-        padding: '5px 10px',
-        backgroundColor: '#dc3545',
-        color: '#fff',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer',
-        fontSize: '0.8em',
-        marginLeft: 'auto',
-    };
-    const dropzoneBaseStyle = {
-        border: `2px dashed #ccc`,
-        padding: '30px',
-        textAlign: 'center',
-        cursor: 'pointer',
-        backgroundColor: '#fff',
-        marginBottom: '20px',
-        borderRadius: '4px',
-    };
-    const dropzoneActiveStyle = { borderColor: '#2196f3', backgroundColor: '#f0f8ff' };
-    const dropzoneDisabledStyle = { cursor: 'not-allowed', backgroundColor: '#eee' };
-    const getDropzoneStyle = useCallback(
-        () => ({
-            ...dropzoneBaseStyle,
-            ...(isDragActive ? dropzoneActiveStyle : {}),
-            ...(uploading ? dropzoneDisabledStyle : {}),
-        }),
-        [isDragActive, uploading]
-    );
-    const h2Style = {
-        textAlign: 'center',
-        color: '#0056b3',
-        marginBottom: '30px',
-        borderBottom: '2px solid #0056b3',
-        paddingBottom: '10px',
-    };
-    const h3Style = { color: '#0056b3', marginBottom: '15px', marginTop: '25px' };
-    const gridStyle = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px 30px' };
-    const fullWidthStyle = { gridColumn: '1 / -1' };
-    const resultBoxStyle = {
-        padding: '25px',
-        backgroundColor: '#f0fff4',
-        border: '1px solid #b8ddc4',
-        borderRadius: '8px',
-        marginTop: '20px',
-    };
-    const errorStyle = {
-        color: 'red',
-        fontWeight: 'bold',
-        marginTop: '10px',
-        padding: '10px',
-        border: '1px solid red',
-        borderRadius: '4px',
-        background: '#ffeeee',
-    };
-    const ocrResultStyle = {
-        padding: '15px',
-        border: '1px solid #e0e0e0',
-        backgroundColor: '#fdfdfd',
-        marginTop: '15px',
-        borderRadius: '4px',
-    };
-    const fieldsetBorderStyle = { border: '1px solid #ccc', padding: '20px', borderRadius: '5px', marginBottom: '20px' };
-    const legendStyle = { fontWeight: 'bold', color: '#0056b3', padding: '0 10px' };
+     const handleGeneratePDF = async () => {
+         if (!calculationResult) {
+            alert('Please perform a calculation first to generate a PDF report.');
+             return;
+         }
+         try {
+             console.log("Requesting PDF generation with data:", calculationResult);
+             const response = await axios.post(`${backendUrl}/api/generate-pdf`, calculationResult, {
+                 responseType: 'blob', // Important for handling binary PDF data
+                 headers: { 'Accept': 'application/pdf' },
+                 timeout: 30000 // 30 second timeout for PDF generation
+             });
+
+            // Create a URL for the blob object
+             const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
+             const link = document.createElement('a');
+             link.href = url;
+             // Generate a filename (replace invalid chars)
+            const filename = `SolarFit_Report_${(calculationResult.location || 'Location').replace(/[^a-z0-9]/gi, '_')}.pdf`;
+            link.setAttribute('download', filename);
+
+             // Append, click, and remove the link
+             document.body.appendChild(link);
+             link.click();
+            document.body.removeChild(link);
+
+            // Clean up the object URL
+             window.URL.revokeObjectURL(url);
+
+        } catch (error) {
+             console.error('PDF generation failed:', error);
+            let errorMsg = 'PDF generation failed. ';
+            // Try to read error message if server sent JSON instead of PDF blob
+             if (error.response && error.response.data instanceof Blob && error.response.data.type === 'application/json') {
+                 try {
+                    const errJson = JSON.parse(await error.response.data.text());
+                    errorMsg += errJson.message || 'Server error during PDF creation.';
+                 } catch (parseError) {
+                    errorMsg += 'Unable to parse server error response.';
+                 }
+             } else if (error.response?.data?.message) {
+                errorMsg += error.response.data.message;
+             } else {
+                 errorMsg += error.message || 'Check server logs for details.';
+             }
+             alert(errorMsg);
+         }
+     };
+
+     const loadCalculation = (calc) => {
+        if (calc && calc.calculationData) {
+            const params = calc.calculationData;
+            // Update state based on loaded calculation data
+             setLocation(params.location || '');
+             setSystemType(params.systemType || 'on-grid');
+             setUserType(params.userType || 'residential');
+             setSystemVoltage(params.systemVoltage || 48);
+             setAvgMonthlyKwh(params.avgMonthlyKwh || '');
+             setAvgMonthlyBill(params.avgMonthlyBill || '');
+             setElectricityPricePerKwh(params.electricityPricePerKwh || '');
+             setAppliances(params.appliances || []); // Need unique IDs if re-using add/remove logic
+            // Add IDs if missing when loading:
+             setAppliances((params.appliances || []).map((app, idx) => ({...app, id: app.id || Date.now() + idx })));
+
+            if (params.systemType !== 'on-grid'){
+                 setAutonomyDays(params.autonomyDays || 1.5);
+                 setDepthOfDischarge(params.depthOfDischarge || 0.8);
+            }
+             setPanelWattage(params.panelWattage || 550);
+             setTilt(params.tilt || 15);
+             setAzimuth(params.azimuth || 180);
+             setShading(params.shading || 0);
+             setBudget(params.budget || '');
+
+             setCalculationResult(calc.resultData || null); // Load the result too
+            setCalculationError(''); // Clear errors
+            window.scrollTo({ top: 0, behavior: 'smooth' }); // Scroll to top
+            alert(`Loaded calculation saved on ${new Date(calc.createdAt).toLocaleDateString()}`);
+         }
+     }
+
+    // --- Styles --- (using Tailwind CSS classes for brevity and modernity)
+    // Include Tailwind via CDN in _document.js or install via npm
+
+    const cardStyle = "bg-white p-6 rounded-lg shadow-md mb-6";
+    const fieldsetStyle = "border border-gray-300 p-4 rounded-md mb-4";
+    const legendStyle = "font-semibold text-blue-700 px-2";
+    const formGroupStyle = "mb-4";
+    const labelStyle = "block text-sm font-medium text-gray-700 mb-1";
+    const inputStyle = "block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm";
+    const selectStyle = inputStyle + " appearance-none"; // Ensure select arrows show
+    const buttonStyle = "inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed";
+    const buttonSecondaryStyle = buttonStyle + " bg-gray-600 hover:bg-gray-700 focus:ring-gray-500";
+    const buttonDangerStyle = buttonStyle + " bg-red-600 hover:bg-red-700 focus:ring-red-500";
+    const h2Style = "text-2xl font-bold text-center text-blue-800 mb-6 pb-2 border-b-2 border-blue-300";
+    const h3Style = "text-lg font-semibold text-blue-700 mt-4 mb-2";
+    const gridStyle = "grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4"; // Responsive grid
 
     return (
-        <div style={pageStyle}>
-            <h1>Solar System Sizing Calculator</h1>
+        <div className="max-w-4xl mx-auto p-4 md:p-8 bg-gray-50 font-sans">
+            <h1 className="text-3xl font-bold text-center text-blue-900 mb-8">SolarFit - Advanced Solar System Sizing</h1>
 
-            {/* Login/Signup Section */}
-            <section>
-                {!isLoggedIn ? (
-                    <div>
-                        <h2 style={h2Style}>Login / Signup</h2>
-                        <div style={gridStyle}>
-                            <div style={formGroupStyle}>
-                                <label style={labelStyle} htmlFor="username">
-                                    Username:
-                                </label>
-                                <input
-                                    id="username"
-                                    value={username}
-                                    onChange={(e) => setUsername(e.target.value)}
-                                    style={inputStyle}
-                                />
-                            </div>
-                            <div style={formGroupStyle}>
-                                <label style={labelStyle} htmlFor="password">
-                                    Password:
-                                </label>
-                                <input
-                                    id="password"
-                                    type="password"
-                                    value={password}
-                                    onChange={(e) => setPassword(e.target.value)}
-                                    style={inputStyle}
-                                />
-                            </div>
+             {/* Authentication Section */}
+             <div className={cardStyle}>
+                 {!isLoggedIn ? (
+                    <>
+                        <h2 className={h2Style}>Login or Signup</h2>
+                         {authMessage && <p className={`text-center p-2 rounded mb-4 ${authMessage.startsWith("Error:") ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{authMessage}</p>}
+                        <div className={gridStyle}>
+                            <div className={formGroupStyle}>
+                                 <label htmlFor="username" className={labelStyle}>Username:</label>
+                                <input id="username" value={username} onChange={e => setUsername(e.target.value)} className={inputStyle} />
+                             </div>
+                             <div className={formGroupStyle}>
+                                <label htmlFor="password" className={labelStyle}>Password:</label>
+                                <input id="password" type="password" value={password} onChange={e => setPassword(e.target.value)} className={inputStyle} />
+                             </div>
+                         </div>
+                         <div className="mt-4 flex justify-center space-x-4">
+                            <button onClick={() => handleAuthAction('signup')} className={buttonSecondaryStyle}>Signup</button>
+                            <button onClick={() => handleAuthAction('login')} className={buttonStyle}>Login</button>
                         </div>
-                        <div style={{ marginTop: '10px' }}>
-                            <button
-                                onClick={handleSignup}
-                                style={{ ...buttonSecondaryStyle, marginRight: '10px' }}
-                            >
-                                Signup
-                            </button>
-                            <button onClick={handleLogin} style={buttonStyle}>
-                                Login
-                            </button>
-                        </div>
-                    </div>
+                     </>
                 ) : (
-                    <div>
-                        <div
-                            style={{
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'center',
-                                marginBottom: '20px',
-                            }}
-                        >
-                            <h2
-                                style={{
-                                    ...h2Style,
-                                    textAlign: 'left',
-                                    marginBottom: 0,
-                                    borderBottom: 'none',
-                                    paddingBottom: 0,
-                                }}
-                            >
-                                Welcome!
-                            </h2>
-                            <button onClick={handleLogout} style={buttonDangerStyle}>
-                                Logout
-                            </button>
-                        </div>
-                    </div>
-                )}
-            </section>
+                     <div className="flex justify-between items-center">
+                        <h2 className="text-xl font-semibold text-green-700">Welcome back!</h2>
+                         {authMessage && !authMessage.includes("successful") && !authMessage.includes("Saving") && <p className={`text-center p-2 rounded ${authMessage.startsWith("Error:") || authMessage.includes("Could not load") ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{authMessage}</p>}
+                        <button onClick={handleLogout} className={buttonDangerStyle}>Logout</button>
+                     </div>
+                 )}
+             </div>
 
-            {/* OCR Bill Upload Section */}
-            <section style={sectionStyle}>
-                <h2 style={h2Style}>1. Upload Bill (Optional) or Enter Usage Manually</h2>
-                <div {...getRootProps()} style={getDropzoneStyle()}>
-                    <input {...getInputProps()} />
-                    {uploading ? (
-                        <p>Processing... {ocrProgress}%</p>
-                    ) : isDragActive ? (
-                        <p>Drop the bill image here ...</p>
-                    ) : (
-                        <p>Drag & drop bill image (PNG/JPG) here, or click to select file</p>
-                    )}
-                </div>
-                {lastUploadFilename && (
-                    <p style={{ fontSize: '0.9em', color: '#555' }}>
-                        Last file: <strong>{lastUploadFilename}</strong>
-                    </p>
-                )}
-                {extractedData && (
-                    <div style={ocrResultStyle}>
-                        <h3 style={{ ...h3Style, marginTop: 0 }}>OCR Results (Verify & Correct):</h3>
-                        <p>
-                            <strong>Issue Date:</strong> {extractedData.issueDate || 'Not Found'}
-                        </p>
-                        <p>
-                            <strong>Customer Name:</strong> {extractedData.customerName || 'Not Found'}
-                        </p>
-                        <p>
-                            <strong>Location:</strong> {extractedData.billLocation || 'Not Found'}
-                        </p>
-                        <div style={formGroupStyle}>
-                            <label style={labelStyle}>Detected Avg. Monthly kWh:</label>
-                            <input
-                                type="number"
-                                style={inputStyle}
-                                value={avgMonthlyKwh}
-                                onChange={(e) => setAvgMonthlyKwh(e.target.value)}
-                                placeholder="Enter kWh if not found/incorrect"
-                            />
-                        </div>
-                        <div style={formGroupStyle}>
-                            <label style={labelStyle}>Detected Avg. Monthly Bill (KES):</label>
-                            <input
-                                type="number"
-                                style={inputStyle}
-                                value={avgMonthlyBill}
-                                onChange={(e) => setAvgMonthlyBill(e.target.value)}
-                                placeholder="Enter Bill Amount if not found/incorrect"
-                            />
-                        </div>
-                        <p style={{ fontSize: '0.8em', color: 'gray', marginTop: '10px' }}>
-                            You can also fill/override these values manually below.
-                        </p>
-                    </div>
-                )}
-            </section>
+             {/* Saved Calculations (if logged in) */}
+             {isLoggedIn && (
+                <div className={cardStyle}>
+                     <h2 className={h2Style}>Saved Calculations</h2>
+                    {loadingSaved ? <p>Loading saved calculations...</p> : (
+                        savedCalculations.length > 0 ? (
+                             <ul className="space-y-2 max-h-60 overflow-y-auto">
+                                {savedCalculations.map(calc => (
+                                    <li key={calc._id} className="flex justify-between items-center p-2 border rounded hover:bg-gray-100">
+                                         <span>{calc.resultData?.location || 'No Location'} - {calc.resultData?.pvSystem?.sizeKwP || '?'}kWp - {new Date(calc.createdAt).toLocaleDateString()}</span>
+                                        <button onClick={() => loadCalculation(calc)} className={buttonSecondaryStyle + " text-xs px-2 py-1"}>Load</button>
+                                    </li>
+                                 ))}
+                             </ul>
+                        ) : <p className="text-center text-gray-500">No saved calculations found.</p>
+                     )}
+                 </div>
+             )}
 
-            {/* Manual Sizing Details Section */}
-            <section style={sectionStyle}>
-                <h2 style={h2Style}>2. Enter Project Details & Energy Needs</h2>
-                <div style={gridStyle}>
-                    <fieldset style={fieldsetBorderStyle}>
-                        <legend style={legendStyle}>Location & System</legend>
-                        <div style={formGroupStyle}>
-                            <label style={labelStyle} htmlFor="location">
-                                Project Location:*
-                            </label>
-                            <input
-                                id="location"
-                                value={location}
-                                onChange={(e) => setLocation(e.target.value)}
-                                style={inputStyle}
-                                placeholder="e.g., Nairobi, Kenya"
-                                required
-                            />
-                        </div>
-                        <div style={formGroupStyle}>
-                            <label style={labelStyle} htmlFor="systemType">
-                                System Type:*
-                            </label>
-                            <select
-                                id="systemType"
-                                value={systemType}
-                                onChange={(e) => setSystemType(e.target.value)}
-                                style={selectStyle}
-                                required
-                            >
-                                <option value="on-grid">On-Grid</option>
-                                <option value="off-grid">Off-Grid</option>
-                                <option value="hybrid">Hybrid</option>
-                            </select>
-                        </div>
-                        <div style={formGroupStyle}>
-                            <label style={labelStyle} htmlFor="userType">
-                                User Type:*
-                            </label>
-                            <select
-                                id="userType"
-                                value={userType}
-                                onChange={(e) => {
-                                    setUserType(e.target.value);
-                                    setAppliances([]);
-                                }}
-                                style={selectStyle}
-                                required
-                            >
-                                <option value="residential">Residential</option>
-                                <option value="commercial">Commercial</option>
-                                <option value="industrial">Industrial</option>
-                            </select>
-                        </div>
-                    </fieldset>
-                    <fieldset style={fieldsetBorderStyle}>
-                        <legend style={legendStyle}>Energy Consumption*</legend>
-                        <p style={{ fontSize: '0.85em', color: '#555', marginBottom: '15px' }}>
-                            Enter details below OR list appliances.
-                        </p>
-                        <div style={formGroupStyle}>
-                            <label style={labelStyle} htmlFor="avgMonthlyKwh">
-                                Avg. Monthly kWh:
-                            </label>
-                            <input
-                                id="avgMonthlyKwh"
-                                type="number"
-                                value={avgMonthlyKwh}
-                                onChange={(e) => setAvgMonthlyKwh(e.target.value)}
-                                style={inputStyle}
-                                placeholder="From bill or estimate"
-                            />
-                        </div>
-                        <div style={formGroupStyle}>
-                            <label style={labelStyle} htmlFor="avgMonthlyBill">
-                                Avg. Monthly Bill (KES):
-                            </label>
-                            <input
-                                id="avgMonthlyBill"
-                                type="number"
-                                value={avgMonthlyBill}
-                                onChange={(e) => setAvgMonthlyBill(e.target.value)}
-                                style={inputStyle}
-                                placeholder="From bill or estimate"
-                            />
-                        </div>
-                        <div style={formGroupStyle}>
-                            <label style={labelStyle} htmlFor="electricityPrice">
-                                Current Electricity Price (KES/kWh):*
-                            </label>
-                            <input
-                                id="electricityPrice"
-                                type="number"
-                                step="0.1"
-                                value={electricityPricePerKwh}
-                                onChange={(e) => setElectricityPricePerKwh(e.target.value)}
-                                style={inputStyle}
-                                placeholder="e.g., 25.5"
-                                required
-                            />
-                            <small style={{ fontSize: '0.8em', color: '#666', marginTop: '3px' }}>
-                                Needed for payback calculation.
-                            </small>
-                        </div>
-                    </fieldset>
-                    {systemType !== 'on-grid' && (
-                        <fieldset style={fieldsetBorderStyle}>
-                            <legend style={legendStyle}>Battery Details</legend>
-                            <div style={formGroupStyle}>
-                                <label style={labelStyle} htmlFor="autonomyDays">
-                                    Days of Autonomy:*
-                                </label>
-                                <input
-                                    id="autonomyDays"
-                                    type="number"
-                                    value={autonomyDays}
-                                    onChange={(e) => setAutonomyDays(e.target.value)}
-                                    style={inputStyle}
-                                    min="1"
-                                    required
-                                />
-                                <small style={{ fontSize: '0.8em', color: '#666', marginTop: '3px' }}>
-                                    Days battery lasts without sun.
-                                </small>
+
+            {/* Removed OCR Dropzone for simplicity now - can be added back if needed */}
+
+            {/* Sizing Input Section */}
+             <form onSubmit={e => { e.preventDefault(); handleCalculateClick(); }}>
+                 <div className={cardStyle}>
+                     <h2 className={h2Style}>Project Details & Energy Needs</h2>
+
+                    {/* Grid for layout */}
+                     <div className={gridStyle}>
+
+                        {/* Location & System Type */}
+                        <fieldset className={fieldsetStyle}>
+                             <legend className={legendStyle}>Location & System</legend>
+                             <div className={formGroupStyle}>
+                                <label htmlFor="location" className={labelStyle}>Project Location* <span className="text-gray-500 text-xs">(e.g., Nairobi, Kenya)</span></label>
+                                <input id="location" value={location} onChange={e => setLocation(e.target.value)} className={inputStyle} required placeholder="City/Town, Country"/>
+                             </div>
+                            <div className={formGroupStyle}>
+                                <label htmlFor="systemType" className={labelStyle}>System Type*</label>
+                                <select id="systemType" value={systemType} onChange={e => setSystemType(e.target.value)} className={selectStyle} required>
+                                    <option value="on-grid">On-Grid (Grid-Tied)</option>
+                                     <option value="off-grid">Off-Grid</option>
+                                     <option value="hybrid">Hybrid (Grid + Battery)</option>
+                                 </select>
+                             </div>
+                            <div className={formGroupStyle}>
+                                <label htmlFor="userType" className={labelStyle}>User Type*</label>
+                                <select id="userType" value={userType} onChange={e => {setUserType(e.target.value); setAppliances([])}} className={selectStyle} required>
+                                    <option value="residential">Residential</option>
+                                    <option value="commercial">Commercial</option>
+                                    <option value="industrial">Industrial</option>
+                                </select>
+                             </div>
+                         </fieldset>
+
+                        {/* Energy Consumption */}
+                        <fieldset className={fieldsetStyle}>
+                             <legend className={legendStyle}>Energy Consumption*</legend>
+                             <p className="text-xs text-gray-500 mb-2">Provide one: Avg. kWh, Avg. Bill, or detailed appliances below.</p>
+                            <div className={formGroupStyle}>
+                                <label htmlFor="avgMonthlyKwh" className={labelStyle}>Avg. Monthly kWh <span className="text-gray-500 text-xs">(Optional)</span></label>
+                                <input id="avgMonthlyKwh" type="number" value={avgMonthlyKwh} onChange={e => setAvgMonthlyKwh(e.target.value)} className={inputStyle} placeholder="e.g., 350" disabled={appliances.length > 0} />
+                             </div>
+                            <div className={formGroupStyle}>
+                                 <label htmlFor="avgMonthlyBill" className={labelStyle}>Avg. Monthly Bill (KES) <span className="text-gray-500 text-xs">(Optional)</span></label>
+                                 <input id="avgMonthlyBill" type="number" value={avgMonthlyBill} onChange={e => setAvgMonthlyBill(e.target.value)} className={inputStyle} placeholder="e.g., 8000" disabled={appliances.length > 0 || !!avgMonthlyKwh} />
                             </div>
-                            <div style={formGroupStyle}>
-                                <label style={labelStyle} htmlFor="dod">
-                                    Battery Depth of Discharge (DoD):*
-                                </label>
-                                <input
-                                    id="dod"
-                                    type="number"
-                                    step="0.05"
-                                    min="0.1"
-                                    max="1.0"
-                                    value={depthOfDischarge}
-                                    onChange={(e) => setDepthOfDischarge(e.target.value)}
-                                    style={inputStyle}
-                                    required
-                                />
-                                <small style={{ fontSize: '0.8em', color: '#666', marginTop: '3px' }}>
-                                    e.g., 0.8 for 80% DoD
-                                </small>
+                            <div className={formGroupStyle}>
+                                 <label htmlFor="electricityPrice" className={labelStyle}>Current Electricity Price (KES/kWh)*</label>
+                                <input id="electricityPrice" type="number" step="0.1" value={electricityPricePerKwh} onChange={e => setElectricityPricePerKwh(e.target.value)} className={inputStyle} placeholder="e.g., 25.5" required />
+                                 <span className="text-xs text-gray-500">Needed for Bill estimate & Payback calculation.</span>
+                             </div>
+                         </fieldset>
+
+                         {/* Battery Details (Conditional) */}
+                         {systemType !== 'on-grid' && (
+                             <fieldset className={fieldsetStyle}>
+                                 <legend className={legendStyle}>Battery Setup (Off-Grid/Hybrid)</legend>
+                                <div className={formGroupStyle}>
+                                     <label htmlFor="systemVoltage" className={labelStyle}>Battery System Voltage*</label>
+                                    <select id="systemVoltage" value={systemVoltage} onChange={e => setSystemVoltage(Number(e.target.value))} className={selectStyle} required>
+                                         <option value="12">12 V</option>
+                                         <option value="24">24 V</option>
+                                         <option value="48">48 V</option>
+                                     </select>
+                                 </div>
+                                 <div className={formGroupStyle}>
+                                    <label htmlFor="autonomyDays" className={labelStyle}>Days of Autonomy*</label>
+                                    <input id="autonomyDays" type="number" step="0.5" min="0.5" value={autonomyDays} onChange={e => setAutonomyDays(e.target.value)} className={inputStyle} required />
+                                    <span className="text-xs text-gray-500">Days battery supports load without sun.</span>
+                                 </div>
+                                 <div className={formGroupStyle}>
+                                     <label htmlFor="dod" className={labelStyle}>Battery Depth of Discharge (DoD)*</label>
+                                    <input id="dod" type="number" step="0.05" min="0.1" max="1.0" value={depthOfDischarge} onChange={e => setDepthOfDischarge(e.target.value)} className={inputStyle} required placeholder="0.8 for 80%" />
+                                    <span className="text-xs text-gray-500">Fraction of battery capacity to use (e.g., 0.8 for LiFePO4).</span>
+                                 </div>
+                             </fieldset>
+                        )}
+
+                        {/* Panel Configuration */}
+                         <fieldset className={fieldsetStyle}>
+                             <legend className={legendStyle}>Panel Configuration</legend>
+                            <div className={formGroupStyle}>
+                                 <label htmlFor="panelWattage" className={labelStyle}>Individual Panel Wattage (Wp)*</label>
+                                <input id="panelWattage" type="number" step="5" min="50" max="1000" value={panelWattage} onChange={e => setPanelWattage(e.target.value)} className={inputStyle} required placeholder="e.g., 550" />
+                             </div>
+                            {/* Advanced/Optional Panel Settings */}
+                            <div className="mt-4">
+                                 <button type="button" onClick={() => setShowAdvanced(!showAdvanced)} className="text-sm text-blue-600 hover:underline mb-2">
+                                     {showAdvanced ? 'Hide' : 'Show'} Advanced Panel Settings (Tilt/Azimuth/Shading)
+                                 </button>
+                                 {showAdvanced && (
+                                     <div className="space-y-3 pt-2 border-t">
+                                         <div className={formGroupStyle}>
+                                             <label htmlFor="tilt" className={labelStyle}>Panel Tilt (°)<span className="text-gray-500 text-xs"> (0=Flat, 90=Vertical)</span></label>
+                                            <input id="tilt" type="number" min="0" max="90" value={tilt} onChange={e => setTilt(e.target.value)} className={inputStyle} />
+                                             <span className="text-xs text-gray-500">Often near location latitude for optimal annual output.</span>
+                                         </div>
+                                         <div className={formGroupStyle}>
+                                             <label htmlFor="azimuth" className={labelStyle}>Panel Azimuth (°)<span className="text-gray-500 text-xs"> (0=N, 90=E, 180=S, 270=W)</span></label>
+                                             <input id="azimuth" type="number" min="0" max="359" value={azimuth} onChange={e => setAzimuth(e.target.value)} className={inputStyle} />
+                                             <span className="text-xs text-gray-500">Direction panels face (180 for South in N. Hemisphere).</span>
+                                        </div>
+                                         <div className={formGroupStyle}>
+                                             <label htmlFor="shading" className={labelStyle}>Shading Losses (%)</label>
+                                            <input id="shading" type="number" min="0" max="99" value={shading} onChange={e => setShading(e.target.value)} className={inputStyle} />
+                                             <span className="text-xs text-gray-500">Estimated % reduction in yearly output due to shadows.</span>
+                                         </div>
+                                    </div>
+                                )}
+                            </div>
+                         </fieldset>
+
+                        {/* Optional Budget */}
+                        <fieldset className={fieldsetStyle + ' md:col-span-2'}> {/* Span full width on medium screens */}
+                            <legend className={legendStyle}>Optional Budget</legend>
+                            <div className={formGroupStyle}>
+                                 <label htmlFor="budget" className={labelStyle}>Maximum Budget (KES) <span className="text-gray-500 text-xs">(Optional)</span></label>
+                                <input id="budget" type="number" value={budget} onChange={e => setBudget(e.target.value)} className={inputStyle} placeholder="Leave blank if no budget constraint" />
+                                <span className="text-xs text-gray-500">If set, the system size may be reduced to fit this budget.</span>
                             </div>
                         </fieldset>
-                    )}
-                    <fieldset style={fieldsetBorderStyle}>
-                        <legend style={legendStyle}>Panel Configuration</legend>
-                        <div style={formGroupStyle}>
-                            <label style={labelStyle} htmlFor="panelWattage">
-                                Panel Wattage (Wp):*
-                            </label>
-                            <input
-                                id="panelWattage"
-                                type="number"
-                                value={panelWattage}
-                                onChange={(e) => setPanelWattage(e.target.value)}
-                                style={inputStyle}
-                                min="100"
-                                step="5"
-                                placeholder="e.g., 450"
-                                required
-                            />
-                            <small style={{ fontSize: '0.8em', color: '#666', marginTop: '3px' }}>
-                                Wattage of individual panels.
-                            </small>
-                        </div>
-                        <div style={formGroupStyle}>
-                            <label style={labelStyle} htmlFor="tilt">
-                                Panel Tilt (degrees):
-                            </label>
-                            <input
-                                id="tilt"
-                                type="number"
-                                value={tilt}
-                                onChange={(e) => setTilt(e.target.value)}
-                                style={inputStyle}
-                                min="0"
-                                max="90"
-                                placeholder="Optimal near latitude"
-                            />
-                        </div>
-                        <div style={formGroupStyle}>
-                            <label style={labelStyle} htmlFor="azimuth">
-                                Panel Azimuth (degrees):
-                            </label>
-                            <input
-                                id="azimuth"
-                                type="number"
-                                value={azimuth}
-                                onChange={(e) => setAzimuth(e.target.value)}
-                                style={inputStyle}
-                                min="0"
-                                max="359"
-                                placeholder="180 = South"
-                            />
-                        </div>
-                        <div style={formGroupStyle}>
-                            <label style={labelStyle} htmlFor="shading">
-                                Shading Losses (%):
-                            </label>
-                            <input
-                                id="shading"
-                                type="number"
-                                value={shading}
-                                onChange={(e) => setShading(e.target.value)}
-                                style={inputStyle}
-                                min="0"
-                                max="100"
-                            />
-                            <small style={{ fontSize: '0.8em', color: '#666', marginTop: '3px' }}>
-                                % yearly loss due to shade.
-                            </small>
-                        </div>
-                    </fieldset>
-                    <fieldset style={fieldsetBorderStyle}>
-                        <legend style={legendStyle}>Optional Details</legend>
-                        <div style={formGroupStyle}>
-                            <label style={labelStyle}>Budget (KES) (Optional):</label>
-                            <input
-                                type="number"
-                                value={budget}
-                                onChange={(e) => setBudget(e.target.value)}
-                                style={inputStyle}
-                                placeholder="Max budget if applicable"
-                            />
-                        </div>
-                        <div style={formGroupStyle}>
-                            <label style={labelStyle}>Roof Area (sqm) (Optional):</label>
-                            <input
-                                type="number"
-                                value={roofArea}
-                                onChange={(e) => setRoofArea(e.target.value)}
-                                style={inputStyle}
-                                placeholder="For future space checks"
-                            />
-                        </div>
-                    </fieldset>
-                    <fieldset style={{ ...fieldsetBorderStyle, ...fullWidthStyle }}>
-                        <legend style={legendStyle}>Appliance Details (Alternative to kWh/Bill)</legend>
-                        {appliances.map((appliance, index) => (
-                            <div
-                                key={index}
-                                style={{
-                                    display: 'grid',
-                                    gridTemplateColumns:
-                                        appliance.name === 'custom'
-                                            ? '2fr 1fr 1fr 0.5fr 0.5fr auto'
-                                            : '3fr 1fr 0.5fr 0.5fr auto',
-                                    gap: '10px',
-                                    marginBottom: '10px',
-                                    alignItems: 'center',
-                                    paddingBottom: '10px',
-                                    borderBottom: '1px dashed #eee',
-                                }}
-                            >
-                                <select
-                                    value={appliance.name}
-                                    onChange={(e) => updateAppliance(index, 'name', e.target.value)}
-                                    style={{ ...selectStyle }}
-                                >
-                                    <option value="custom">-- Custom Appliance --</option>
-                                    {(applianceCategories[userType] || []).map((app) => (
-                                        <option key={app.name} value={app.name}>
-                                            {app.name} ({app.power}W)
-                                        </option>
-                                    ))}
-                                </select>
-                                {appliance.name === 'custom' && (
-                                    <input
-                                        type="text"
-                                        placeholder="Appliance Name"
-                                        value={appliance.customName || ''}
-                                        onChange={(e) => updateAppliance(index, 'customName', e.target.value)}
-                                        style={inputStyle}
-                                    />
+
+                        {/* Appliance Details */}
+                        <fieldset className={fieldsetStyle + ' md:col-span-2'}> {/* Span full width */}
+                             <legend className={legendStyle}>Appliance Details (Enter if not using kWh/Bill above)</legend>
+                            {appliances.map((appliance) => (
+                                <div key={appliance.id} className="grid grid-cols-6 gap-2 items-end mb-3 border-b pb-2 border-dashed">
+                                     {/* Appliance Selector */}
+                                    <div className="col-span-6 sm:col-span-2">
+                                         <label className="text-xs font-medium text-gray-600">Appliance*</label>
+                                         <select value={appliance.name} onChange={e => updateAppliance(appliance.id, 'name', e.target.value)} className={selectStyle + ' text-sm'}>
+                                             <option value="custom">-- Custom --</option>
+                                             {(applianceCategories[userType] || []).map(app => (
+                                                <option key={app.name} value={app.name}>{app.name} ({app.power}W)</option>
+                                            ))}
+                                        </select>
+                                     </div>
+                                     {/* Custom Name Input (conditional) */}
+                                    {appliance.name === 'custom' && (
+                                         <div className="col-span-6 sm:col-span-2">
+                                            <label className="text-xs font-medium text-gray-600">Custom Name*</label>
+                                            <input type="text" placeholder="e.g., Freezer Large" value={appliance.customName || ''} onChange={e => updateAppliance(appliance.id, 'customName', e.target.value)} className={inputStyle + ' text-sm'} required/>
+                                         </div>
+                                     )}
+                                    {/* Power Input */}
+                                    <div className={`col-span-3 sm:col-span-1 ${appliance.name === 'custom' ? '' : 'sm:col-start-3'}`}> {/* Adjust column start */}
+                                        <label className="text-xs font-medium text-gray-600">Power (W)*</label>
+                                        <input type="number" placeholder="W" value={appliance.power} onChange={e => updateAppliance(appliance.id, 'power', e.target.value)} className={inputStyle + ' text-sm'} min="0" required />
+                                    </div>
+                                    {/* Quantity Input */}
+                                    <div className="col-span-3 sm:col-span-1">
+                                        <label className="text-xs font-medium text-gray-600">Qty*</label>
+                                        <input type="number" placeholder="Qty" value={appliance.quantity} onChange={e => updateAppliance(appliance.id, 'quantity', e.target.value)} className={inputStyle + ' text-sm'} min="1" required />
+                                    </div>
+                                    {/* Hours Input */}
+                                     <div className="col-span-3 sm:col-span-1">
+                                        <label className="text-xs font-medium text-gray-600">Hrs/Day*</label>
+                                        <input type="number" step="0.5" placeholder="Hours" value={appliance.hoursPerDay} onChange={e => updateAppliance(appliance.id, 'hoursPerDay', e.target.value)} className={inputStyle + ' text-sm'} min="0" max="24" required/>
+                                    </div>
+                                    {/* Remove Button */}
+                                    <div className="col-span-3 sm:col-span-1 flex items-end">
+                                        <button type="button" onClick={() => removeAppliance(appliance.id)} className={buttonDangerStyle + " text-xs px-2 py-1 w-full"}>Remove</button>
+                                    </div>
+                                </div>
+                             ))}
+                             <div className="mt-4">
+                                <button type="button" onClick={addAppliance} className={buttonSecondaryStyle} disabled={!!avgMonthlyKwh || !!avgMonthlyBill}>
+                                    Add Appliance
+                                 </button>
+                                 {appliances.length > 0 && (
+                                    <span className="ml-4 text-sm font-semibold">
+                                         Total Daily Usage: {calculateDailyApplianceKwh.toFixed(2)} kWh
+                                    </span>
                                 )}
-                                <input
-                                    type="number"
-                                    placeholder="Power (W)"
-                                    value={appliance.power}
-                                    onChange={(e) => updateAppliance(index, 'power', e.target.value)}
-                                    style={inputStyle}
-                                    min="0"
-                                />
-                                <input
-                                    type="number"
-                                    placeholder="Qty"
-                                    value={appliance.quantity}
-                                    onChange={(e) => updateAppliance(index, 'quantity', e.target.value)}
-                                    style={inputStyle}
-                                    min="1"
-                                />
-                                <input
-                                    type="number"
-                                    placeholder="Hrs/day"
-                                    value={appliance.hoursPerDay}
-                                    onChange={(e) => updateAppliance(index, 'hoursPerDay', e.target.value)}
-                                    style={inputStyle}
-                                    min="0"
-                                    max="24"
-                                />
-                                <button onClick={() => removeAppliance(index)} style={removeButtonStyle}>
-                                    Remove
-                                </button>
+                                 {(!!avgMonthlyKwh || !!avgMonthlyBill) && <p className="text-xs text-red-600 mt-2">Appliance entry disabled when Avg kWh or Bill is entered above.</p>}
                             </div>
-                        ))}
-                        <div style={{ marginTop: '15px' }}>
-                            <button onClick={addAppliance} style={buttonSecondaryStyle}>
-                                Add Appliance
-                            </button>
-                            {appliances.length > 0 && (
-                                <div style={{ marginTop: '10px', fontSize: '0.9em' }}>
-                                    <strong>Daily Consumption from Appliances:</strong>{' '}
-                                    {calculateDailyApplianceKwh().toFixed(2)} kWh
-                                </div>
-                            )}
+                         </fieldset>
+                     </div> {/* End Grid */}
+
+                    {/* Calculation Trigger */}
+                    <div className="mt-8 text-center">
+                         <button type="submit" className={buttonStyle + " px-6 py-3 text-lg"} disabled={calculating}>
+                             {calculating ? 'Calculating...' : 'Calculate Solar System'}
+                         </button>
+                        {calculationError && <p className="mt-4 text-red-600 font-semibold whitespace-pre-line">{calculationError}</p>}
+                     </div>
+                </div> {/* End Card */}
+             </form>
+
+             {/* Results Section */}
+             {calculationResult && (
+                 <div className={cardStyle + " mt-8 border border-green-300 bg-green-50"}>
+                    <h2 className={h2Style + " !text-green-800 !border-green-400"}>Solar System Results & Estimates</h2>
+
+                    {/* Result Overview Grid */}
+                    <div className={gridStyle}>
+                        <div>
+                            <h3 className={h3Style}>Project Summary</h3>
+                            <p><strong>Location:</strong> {calculationResult.location}</p>
+                             <p><strong>System Type:</strong> {calculationResult.systemType?.replace('-', ' ')}</p>
+                             <p><strong>Daily Need:</strong> {calculationResult.dailyEnergyConsumptionKwh?.toFixed(2)} kWh <span className="text-xs">({calculationResult.energyConsumptionSource})</span></p>
                         </div>
-                    </fieldset>
-                </div>
+                        <div>
+                            <h3 className={h3Style}>Core Components</h3>
+                            <p><strong>PV System Size:</strong> {calculationResult.pvSystem?.sizeKwP} kWp</p>
+                            <p><strong>Panel Config:</strong> {calculationResult.pvSystem?.numberOfPanels} x {calculationResult.pvSystem?.panelWattage} Wp</p>
+                             <p><strong>Inverter Size:</strong> {calculationResult.inverter?.sizeKva} kVA</p>
+                         </div>
+                    </div>
 
-                <div style={{ marginTop: '30px', textAlign: 'center' }}>
-                    <button
-                        onClick={handleCalculateClick}
-                        style={calculating ? buttonDisabledStyle : buttonStyle}
-                        disabled={calculating}
-                    >
-                        {calculating ? 'Calculating...' : 'Calculate Solar System'}
-                    </button>
-                    {calculationError && <div style={errorStyle}>{calculationError}</div>}
-                </div>
-            </section>
+                    {/* Battery Details (Conditional) */}
+                    {calculationResult.batterySystem && (
+                        <>
+                             <h3 className={h3Style}>Battery System (for {calculationResult.systemType})</h3>
+                             <div className={gridStyle}>
+                                <div>
+                                     <p><strong>Actual Capacity:</strong> {calculationResult.batterySystem.actualCapacityKwh} kWh</p>
+                                    <p><strong>Configuration:</strong> {calculationResult.batterySystem.numberOfUnits} x {calculationResult.batterySystem.unitCapacityKwh} kWh units</p>
+                                    <p><strong>System Voltage:</strong> {calculationResult.batterySystem.voltage} V</p>
+                                 </div>
+                                 <div>
+                                     <p><strong>Days of Autonomy:</strong> {calculationResult.batterySystem.autonomyDays}</p>
+                                    <p><strong>Usable Capacity (DoD):</strong> {(calculationResult.batterySystem.depthOfDischarge * 100).toFixed(0)}%</p>
+                                    {calculationResult.chargeController && <p><strong>Controller:</strong> Est. {calculationResult.chargeController.estimatedAmps}A {calculationResult.chargeController.type}</p> }
+                                 </div>
+                             </div>
+                        </>
+                     )}
 
-            {/* Results Section */}
-            {calculationResult && (
-                <section style={sectionStyle}>
-                    <h2 style={h2Style}>3. Solar System Results</h2>
-                    <div style={resultBoxStyle}>
-                        <h3 style={{ ...h3Style, marginTop: 0 }}>System Overview</h3>
-                        <div style={gridStyle}>
-                            <div>
-                                <p>
-                                    <strong>Location:</strong> {calculationResult.location}
-                                </p>
-                                <p>
-                                    <strong>System Type:</strong> {calculationResult.systemType}
-                                </p>
-                                <p>
-                                    <strong>Daily Energy Consumption:</strong>{' '}
-                                    {calculationResult.dailyEnergyConsumptionKwh?.toFixed(2)} kWh
-                                </p>
-                                <p>
-                                    <strong>Energy Source:</strong> {calculationResult.energyConsumptionSource}
-                                </p>
-                            </div>
-                            <div>
-                                <p>
-                                    <strong>PV System Size:</strong> {calculationResult.pvSizeKwP?.toFixed(2)} kWp
-                                </p>
-                                <p>
-                                    <strong>Panel Configuration:</strong> {calculationResult.numberOfPanels} x{' '}
-                                    {calculationResult.panelWattage}W panels
-                                </p>
-                                <p>
-                                    <strong>Inverter Size:</strong> {calculationResult.inverterSizeKva?.toFixed(2)} kVA
-                                </p>
-                                <p>
-                                    <strong>Daily Peak Sun Hours:</strong>{' '}
-                                    {calculationResult.dailyPeakSunHours?.toFixed(2)} hours
-                                </p>
-                            </div>
-                        </div>
-
-                        {calculationResult.systemType !== 'on-grid' && calculationResult.battery && (
-                            <div>
-                                <h3 style={h3Style}>Battery System</h3>
-                                <div style={gridStyle}>
-                                    <div>
-                                        <p>
-                                            <strong>Battery Capacity:</strong>{' '}
-                                            {calculationResult.battery.sizeKwh?.toFixed(2)} kWh
-                                        </p>
-                                        <p>
-                                            <strong>Battery Configuration:</strong>{' '}
-                                            {calculationResult.battery.numberOfUnits} x{' '}
-                                            {calculationResult.battery.unitCapacityKwh} kWh units
-                                        </p>
-                                    </div>
-                                    <div>
-                                        <p>
-                                            <strong>Days of Autonomy:</strong> {calculationResult.autonomyDays}
-                                        </p>
-                                        <p>
-                                            <strong>Depth of Discharge:</strong>{' '}
-                                            {(calculationResult.battery.depthOfDischarge * 100).toFixed(0)}%
-                                        </p>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-
-                        <h3 style={h3Style}>Energy Production</h3>
-                        <p>
-                            <strong>Estimated Annual Production:</strong>{' '}
-                            {calculationResult.annualProductionKwh?.toFixed(0)} kWh
+                    {/* Energy Production */}
+                    <div>
+                        <h3 className={h3Style}>Energy Production</h3>
+                        <p><strong>Est. Annual Production:</strong> {calculationResult.pvSystem?.estimatedAnnualProductionKwh} kWh</p>
+                        <p className="text-xs text-gray-600">
+                            (Based on PVGIS Avg Yield: {calculationResult.productionAnalysis?.avgDailyEnergyPerKwP_kWh} kWh/kWp/day
+                            {calculationResult.productionAnalysis?.isMockPVGISData ? <span className="text-red-600 font-bold"> using MOCK data</span> : ''})
                         </p>
-
-                        {calculationResult.monthlyProduction && (
-                            <div style={{ marginTop: '20px', height: '300px' }}>
-                                <Bar
-                                    data={{
-                                        labels: calculationResult.monthlyProduction.map(
-                                            (m) =>
-                                                [
-                                                    'Jan',
-                                                    'Feb',
-                                                    'Mar',
-                                                    'Apr',
-                                                    'May',
-                                                    'Jun',
-                                                    'Jul',
-                                                    'Aug',
-                                                    'Sep',
-                                                    'Oct',
-                                                    'Nov',
-                                                    'Dec',
-                                                ][m.month - 1]
-                                        ),
-                                        datasets: [
-                                            {
-                                                label: 'Monthly Production (kWh)',
-                                                data: calculationResult.monthlyProduction.map((m) => m.production),
-                                                backgroundColor: 'rgba(54, 162, 235, 0.5)',
-                                                borderColor: 'rgba(54, 162, 235, 1)',
-                                                borderWidth: 1,
-                                            },
-                                        ],
+                        {/* Monthly Production Chart */}
+                        {calculationResult.productionAnalysis?.monthlyProductionKwh?.length > 0 && (
+                             <div className="mt-4 h-64 md:h-80"> {/* Fixed height container */}
+                                 <Bar
+                                     data={{
+                                         labels: calculationResult.productionAnalysis.monthlyProductionKwh.map(m => ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m.month-1]),
+                                         datasets: [{
+                                            label: 'Estimated Monthly Production (kWh)',
+                                            data: calculationResult.productionAnalysis.monthlyProductionKwh.map(m => m.production.toFixed(0)),
+                                             backgroundColor: 'rgba(75, 192, 192, 0.6)',
+                                             borderColor: 'rgba(75, 192, 192, 1)',
+                                             borderWidth: 1
+                                         }]
+                                     }}
+                                     options={{
+                                         responsive: true,
+                                         maintainAspectRatio: false, // Important for fixed height container
+                                         scales: { y: { beginAtZero: true, title: { display: true, text: 'Energy (kWh)' } } }
                                     }}
-                                    options={{
-                                        responsive: true,
-                                        maintainAspectRatio: false,
-                                        scales: {
-                                            y: {
-                                                beginAtZero: true,
-                                                title: {
-                                                    display: true,
-                                                    text: 'Energy (kWh)',
-                                                },
-                                            },
-                                        },
-                                    }}
-                                />
+                                 />
                             </div>
                         )}
+                    </div>
 
-                        <h3 style={h3Style}>Financial Analysis</h3>
-                        <div style={gridStyle}>
-                            <div>
-                                <p>
-                                    <strong>Total System Cost:</strong> KSh{' '}
-                                    {calculationResult.estimatedCost?.total?.toLocaleString()}
-                                </p>
-                                {calculationResult.simplePaybackYears && (
-                                    <p>
-                                        <strong>Simple Payback Period:</strong>{' '}
-                                        {calculationResult.simplePaybackYears?.toFixed(1)} years
+                    {/* Financial Analysis */}
+                     <div className="mt-6 pt-4 border-t">
+                        <h3 className={h3Style}>Financial Estimates ({calculationResult.financial?.currency})</h3>
+                         <div className={gridStyle}>
+                             <div> {/* Left Column */}
+                                 <p><strong>Total Estimated Cost:</strong> <span className="font-bold">{calculationResult.financial?.estimatedTotalCost?.toLocaleString()}</span></p>
+                                {calculationResult.financial?.budget?.constraintApplied && (
+                                     <p className="text-sm text-orange-700">
+                                         System size reduced to meet budget of {calculationResult.financial.budget.target?.toLocaleString()}. (Original est: {calculationResult.financial.budget.initialCalculatedCost?.toLocaleString()})
                                     </p>
                                 )}
-                                {calculationResult.budgetConstrained && (
-                                    <p>
-                                        <strong>Budget Constrained:</strong> Yes (Target: KSh{' '}
-                                        {calculationResult.targetBudget?.toLocaleString()})
-                                    </p>
-                                )}
+                                <p><strong>Estimated Annual Savings:</strong> {calculationResult.financial?.estimatedAnnualSavings?.toLocaleString()}</p>
+                                 <p><strong>Simple Payback Period:</strong> {calculationResult.financial?.simplePaybackYears ? `${calculationResult.financial.simplePaybackYears} years` : 'N/A'}</p>
                             </div>
-                            <div>
-                                <p>
-                                    <strong>Solar Panels:</strong> KSh{' '}
-                                    {calculationResult.estimatedCost?.panels?.toLocaleString()}
-                                </p>
-                                <p>
-                                    <strong>Inverter:</strong> KSh{' '}
-                                    {calculationResult.estimatedCost?.inverter?.toLocaleString()}
-                                </p>
-                                {calculationResult.estimatedCost?.batteries > 0 && (
-                                    <p>
-                                        <strong>Batteries:</strong> KSh{' '}
-                                        {calculationResult.estimatedCost?.batteries?.toLocaleString()}
-                                    </p>
-                                )}
-                                {calculationResult.estimatedCost?.chargeController > 0 && (
-                                    <p>
-                                        <strong>Charge Controller:</strong> KSh{' '}
-                                        {calculationResult.estimatedCost?.chargeController?.toLocaleString()}
-                                    </p>
-                                )}
-                                <p>
-                                    <strong>Mounting & Installation:</strong> KSh{' '}
-                                    {(
-                                        (calculationResult.estimatedCost?.mounting || 0) +
-                                        (calculationResult.estimatedCost?.installation || 0)
-                                    ).toLocaleString()}
-                                </p>
+                             <div> {/* Right Column - Cost Breakdown */}
+                                 <h4 className="text-md font-semibold mb-1">Cost Breakdown:</h4>
+                                 {/* Optional: Use a Pie chart here too */}
+                                 <ul className="text-sm space-y-1">
+                                     <li>Panels: {calculationResult.financial?.costBreakdown?.panels?.toLocaleString()}</li>
+                                    <li>Inverter: {calculationResult.financial?.costBreakdown?.inverter?.toLocaleString()}</li>
+                                     {calculationResult.financial?.costBreakdown?.batteries > 0 && <li>Batteries: {calculationResult.financial?.costBreakdown?.batteries?.toLocaleString()}</li>}
+                                    {calculationResult.financial?.costBreakdown?.chargeController > 0 && <li>Charge Controller: {calculationResult.financial?.costBreakdown?.chargeController?.toLocaleString()}</li>}
+                                    <li>Mounting: {calculationResult.financial?.costBreakdown?.mounting?.toLocaleString()}</li>
+                                     <li>Installation: {calculationResult.financial?.costBreakdown?.installation?.toLocaleString()}</li>
+                                 </ul>
+                                  <div className="mt-4 h-40"> {/* Pie chart for costs */}
+                                      <Pie
+                                         data={{
+                                            labels: ['Panels', 'Inverter', 'Batteries', 'Controller', 'Mounting', 'Installation'].filter((_, i) => {
+                                                  // Filter out zero-cost components like batteries/controller if not applicable
+                                                  const costs = calculationResult.financial?.costBreakdown;
+                                                   if (i === 2 && !(costs?.batteries > 0)) return false;
+                                                   if (i === 3 && !(costs?.chargeController > 0)) return false;
+                                                  return true;
+                                            }),
+                                            datasets: [{
+                                                data: [
+                                                     calculationResult.financial?.costBreakdown?.panels || 0,
+                                                    calculationResult.financial?.costBreakdown?.inverter || 0,
+                                                     calculationResult.financial?.costBreakdown?.batteries || 0,
+                                                    calculationResult.financial?.costBreakdown?.chargeController || 0,
+                                                     calculationResult.financial?.costBreakdown?.mounting || 0,
+                                                    calculationResult.financial?.costBreakdown?.installation || 0
+                                                ].filter(cost => cost > 0), // Filter out zero costs data too
+                                                backgroundColor: ['#36A2EB', '#FF6384', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40'],
+                                             }]
+                                         }}
+                                        options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' } } }}
+                                    />
+                                 </div>
                             </div>
-                        </div>
-
-                        <div style={{ marginTop: '30px', display: 'flex', justifyContent: 'center', gap: '15px' }}>
-                            {isLoggedIn && (
-                                <button onClick={saveCalculation} style={buttonSecondaryStyle}>
-                                    Save Calculation
-                                </button>
-                            )}
-                            <button onClick={handleGeneratePDF} style={buttonStyle}>
-                                Generate PDF Report
-                            </button>
                         </div>
                     </div>
-                </section>
+
+                    {/* Actions: Save & PDF */}
+                    <div className="mt-8 flex justify-center space-x-4">
+                        {isLoggedIn && (
+                             <button onClick={saveCalculation} className={buttonSecondaryStyle} disabled={!calculationInputParams /* Disable if inputs changed since calc */}>
+                                {authMessage.includes("Saving") ? 'Saving...' : 'Save This Calculation'}
+                             </button>
+                        )}
+                         <button onClick={handleGeneratePDF} className={buttonStyle}>
+                            Generate PDF Report
+                         </button>
+                     </div>
+
+                    {/* Assumptions */}
+                    <div className="mt-6 text-xs text-gray-500 border-t pt-2">
+                        <p><strong>Assumptions used:</strong> Panel Watts: {calculationResult.assumptions?.panelWattageUsed}Wp,
+                         {calculationResult.assumptions?.systemVoltage && ` Sys Voltage: ${calculationResult.assumptions.systemVoltage}V,`}
+                         {calculationResult.assumptions?.batteryDoD && ` Batt DoD: ${(calculationResult.assumptions.batteryDoD * 100).toFixed(0)}%,`}
+                         Loss Param: {calculationResult.assumptions?.pvgisSystemLossParam || 'N/A'}%
+                        {/* Add more key assumptions if needed */}
+                        </p>
+                         <p className="italic mt-1">Cost estimates are based on mock regional pricing ({calculationResult.financial?.currency}). PVGIS data retrieval for {calculationResult.location}.</p>
+                     </div>
+                </div>
             )}
 
-            <footer style={{ marginTop: '50px', textAlign: 'center', color: '#666', fontSize: '0.8em' }}>
-                <p>Solar System Sizing Calculator &copy; 2023</p>
-                <p>
-                    This tool provides estimates based on available data. Actual system performance may vary. Always
-                    consult with a certified solar installer before making purchasing decisions.
-                </p>
+            <footer className="mt-12 text-center text-xs text-gray-500 border-t pt-4">
+                 <p>SolarFit Calculator &copy; {new Date().getFullYear()}</p>
+                 <p>This tool provides estimates. Actual system performance and costs depend on specific site conditions, equipment choices, and installation quality. Always consult a qualified professional.</p>
             </footer>
-        </div>
-    );
+
+        </div> // End Main Container
+     );
 }
 
 export default HomePage;
