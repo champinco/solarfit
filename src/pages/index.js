@@ -63,7 +63,11 @@ function HomePage() {
         const fetchAppliances = async () => {
             try {
                 const response = await axios.get(`${backendUrl}/api/appliances`);
-                setApplianceCategories(response.data);
+                if (response.data && typeof response.data === 'object') {
+                    setApplianceCategories(response.data);
+                } else {
+                    console.error('Invalid appliance data format:', response.data);
+                }
             } catch (error) {
                 console.error('Failed to fetch appliance list:', error);
             }
@@ -73,6 +77,8 @@ function HomePage() {
 
     // OCR Extraction Function
     const extractField = (text, labels, pattern = null) => {
+        if (!text) return null;
+        
         const lines = text.split('\n').map((line) => line.trim()).filter((line) => line);
         for (const label of labels) {
             for (const line of lines) {
@@ -94,7 +100,8 @@ function HomePage() {
 
     const onDropAccepted = useCallback(
         async (acceptedFiles) => {
-            if (uploading) return;
+            if (uploading || !acceptedFiles || acceptedFiles.length === 0) return;
+            
             const file = acceptedFiles[0];
             setUploading(true);
             setOcrProgress(0);
@@ -120,25 +127,67 @@ function HomePage() {
                 const dateLabels = ['Issue Date', 'Bill Date', 'Date', 'Statement Date'];
                 const nameLabels = ['Customer Name', 'Account Name', 'Name', 'Billing Name'];
                 const locationLabels = ['Service Address', 'Location', 'Supply Location', 'Address'];
-                const consumptionLabels = ['Total Consumption', 'Consumption', 'Units Consumed', 'Energy Used'];
-                const amountLabels = ['Total Amount Due', 'Amount Payable', 'Total Bill', 'Balance'];
+                const consumptionLabels = ['Total Consumption', 'Consumption', 'Units Consumed', 'Energy Used', 'High Rate'];
+                const amountLabels = ['Total Amount Due', 'Amount Payable', 'Total Bill', 'Balance', 'TOTAL AMOUNT PAYABLE'];
 
                 const datePattern =
-                    /\d{2}\/\d{2}\/\d{4}|\d{4}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}/i;
-                const consumptionPattern = /\d{1,5}(?:\.\d+)?\s*(kWh|KWH|kw\s*h|units)/i;
-                const amountPattern = /KES?\s*[\d,]+\.?\d*/i;
+                    /\d{2}\/\d{2}\/\d{4}|\d{4}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}|\d{2}\s*\/\s*\d{2}\s*\/\s*\d{4}/i;
+                const consumptionPattern = /\d{1,6}(?:,\d{3})*(?:\.\d+)?\s*(kWh|KWH|kw\s*h|units)/i;
+                const amountPattern = /(?:KES|Ksh)?\s*\d{1,3}(?:,\d{3})*(?:\.\d+)?/i;
 
                 const issueDate = extractField(text, dateLabels, datePattern);
                 const customerName = extractField(text, nameLabels);
                 const billLocation = extractField(text, locationLabels);
-                const consumptionStr = extractField(text, consumptionLabels, consumptionPattern);
-                const consumptionKwh = consumptionStr
-                    ? parseFloat(consumptionStr.match(/\d{1,5}(?:\.\d+)?/)[0].replace(/,/g, ''))
-                    : null;
-                const amountStr = extractField(text, amountLabels, amountPattern);
-                const totalAmount = amountStr
-                    ? parseFloat(amountStr.replace(/KES/i, '').replace(/,/g, '').trim())
-                    : null;
+                
+                // Try to extract consumption with pattern first
+                let consumptionStr = extractField(text, consumptionLabels, consumptionPattern);
+                let consumptionKwh = null;
+                
+                // If pattern matching fails, try to find numbers near consumption labels
+                if (!consumptionStr) {
+                    for (const label of consumptionLabels) {
+                        const regex = new RegExp(`${label}\\s*[:\\-]?\\s*(\\d{1,6}(?:,\\d{3})*(?:\\.\\d+)?)`, 'i');
+                        const match = text.match(regex);
+                        if (match && match[1]) {
+                            consumptionStr = match[1];
+                            break;
+                        }
+                    }
+                }
+                
+                // Parse the consumption value if found
+                if (consumptionStr) {
+                    // Extract just the numeric part
+                    const numericMatch = consumptionStr.match(/\d{1,6}(?:,\d{3})*(?:\.\d+)?/);
+                    if (numericMatch) {
+                        consumptionKwh = parseFloat(numericMatch[0].replace(/,/g, ''));
+                    }
+                }
+                
+                // Try to extract amount with pattern first
+                let amountStr = extractField(text, amountLabels, amountPattern);
+                let totalAmount = null;
+                
+                // If pattern matching fails, try to find numbers near amount labels
+                if (!amountStr) {
+                    for (const label of amountLabels) {
+                        const regex = new RegExp(`${label}\\s*[:\\-]?\\s*((?:KES|Ksh)?\\s*\\d{1,3}(?:,\\d{3})*(?:\\.\\d+)?)`, 'i');
+                        const match = text.match(regex);
+                        if (match && match[1]) {
+                            amountStr = match[1];
+                            break;
+                        }
+                    }
+                }
+                
+                // Parse the amount value if found
+                if (amountStr) {
+                    // Extract just the numeric part
+                    const numericMatch = amountStr.match(/\d{1,3}(?:,\d{3})*(?:\.\d+)?/);
+                    if (numericMatch) {
+                        totalAmount = parseFloat(numericMatch[0].replace(/,/g, ''));
+                    }
+                }
 
                 const extracted = {
                     issueDate,
@@ -150,9 +199,10 @@ function HomePage() {
                 setExtractedData(extracted);
                 console.log('Extracted Data:', extracted);
 
-                if (!location && billLocation) setLocation(`${billLocation}, Nairobi, Kenya`);
+                if (!location && billLocation) setLocation(`${billLocation}, Kenya`);
                 if (!avgMonthlyKwh && consumptionKwh) setAvgMonthlyKwh(consumptionKwh.toString());
                 if (!avgMonthlyBill && totalAmount) setAvgMonthlyBill(totalAmount.toString());
+                if (!electricityPricePerKwh) setElectricityPricePerKwh('22'); // Default value for Kenya
             } catch (error) {
                 console.error('OCR error:', error);
                 alert('Failed to process the bill image.');
@@ -223,6 +273,11 @@ function HomePage() {
 
     // Auth Handlers
     const handleSignup = async () => {
+        if (!username || !password) {
+            alert('Please enter both username and password');
+            return;
+        }
+        
         try {
             await axios.post(`${backendUrl}/api/signup`, { username, password });
             alert('Signup successful! Please log in.');
@@ -235,6 +290,11 @@ function HomePage() {
     };
 
     const handleLogin = async () => {
+        if (!username || !password) {
+            alert('Please enter both username and password');
+            return;
+        }
+        
         try {
             const response = await axios.post(`${backendUrl}/api/login`, { username, password });
             const { token } = response.data;
@@ -265,17 +325,22 @@ function HomePage() {
         setCalculationError('');
         setCalculationInputParams(null);
 
+        // Validate required fields
         if (!location) {
             setCalculationError('Project Location is required.');
             setCalculating(false);
             return;
         }
+        
+        // Validate energy information is provided
         const energyProvided = avgMonthlyKwh || avgMonthlyBill || appliances.length > 0;
         if (!energyProvided) {
             setCalculationError('Please provide energy usage: Avg. Monthly kWh, Avg. Monthly Bill, or appliances.');
             setCalculating(false);
             return;
         }
+        
+        // Validate off-grid/hybrid system parameters
         if (systemType !== 'on-grid' && (!autonomyDays || autonomyDays < 1)) {
             setCalculationError('Autonomy days (>= 1) are required for off-grid/hybrid systems.');
             setCalculating(false);
@@ -286,7 +351,15 @@ function HomePage() {
             setCalculating(false);
             return;
         }
+        
+        // Validate panel wattage
+        if (!panelWattage || panelWattage <= 0 || panelWattage > 1000) {
+            setCalculationError('Panel wattage must be between 1 and 1000 Wp.');
+            setCalculating(false);
+            return;
+        }
 
+        // Prepare calculation parameters
         const sizingParameters = {
             location,
             systemType,
@@ -318,12 +391,24 @@ function HomePage() {
 
         try {
             console.log('Sending calculation request:', JSON.stringify(sizingParameters, null, 2));
-            const response = await axios.post(`${backendUrl}/api/calculate`, sizingParameters);
+            const response = await axios.post(`${backendUrl}/api/calculate`, sizingParameters, {
+                timeout: 30000 // 30 second timeout for calculation
+            });
             console.log('Calculation response:', response.data);
             setCalculationResult(response.data);
         } catch (error) {
             console.error('Calculation API error:', error.response || error);
-            setCalculationError(`Calculation failed: ${error.response?.data?.message || error.message}.`);
+            let errorMessage = 'Calculation failed: ';
+            
+            if (error.response && error.response.data && error.response.data.message) {
+                errorMessage += error.response.data.message;
+            } else if (error.message) {
+                errorMessage += error.message;
+            } else {
+                errorMessage += 'Unknown error occurred.';
+            }
+            
+            setCalculationError(errorMessage);
         } finally {
             setCalculating(false);
         }
@@ -358,6 +443,7 @@ function HomePage() {
             const response = await axios.post(`${backendUrl}/api/generate-pdf`, calculationResult, {
                 responseType: 'blob',
                 headers: { Accept: 'application/pdf' },
+                timeout: 30000 // 30 second timeout for PDF generation
             });
             const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
             const link = document.createElement('a');
@@ -372,8 +458,12 @@ function HomePage() {
             console.error('PDF generation failed:', error.response || error);
             let errorMsg = 'PDF generation failed.';
             if (error.response && error.response.data instanceof Blob && error.response.data.type === 'application/json') {
-                const errJson = JSON.parse(await error.response.data.text());
-                errorMsg = `PDF generation failed: ${errJson.message || 'Server error'}`;
+                try {
+                    const errJson = JSON.parse(await error.response.data.text());
+                    errorMsg = `PDF generation failed: ${errJson.message || 'Server error'}`;
+                } catch (parseError) {
+                    errorMsg = 'PDF generation failed: Unable to parse error response.';
+                }
             } else if (error.response?.data?.message) {
                 errorMsg = `PDF generation failed: ${error.response.data.message}`;
             }
@@ -901,7 +991,6 @@ function HomePage() {
                                 )}
                                 <input
                                     type="number"
-                                    title="Power (W)"
                                     placeholder="Power (W)"
                                     value={appliance.power}
                                     onChange={(e) => updateAppliance(index, 'power', e.target.value)}
@@ -910,243 +999,246 @@ function HomePage() {
                                 />
                                 <input
                                     type="number"
-                                    title="Quantity"
+                                    placeholder="Qty"
                                     value={appliance.quantity}
                                     onChange={(e) => updateAppliance(index, 'quantity', e.target.value)}
-                                    min="1"
                                     style={inputStyle}
+                                    min="1"
                                 />
                                 <input
                                     type="number"
-                                    title="Hours/Day"
+                                    placeholder="Hrs/day"
                                     value={appliance.hoursPerDay}
                                     onChange={(e) => updateAppliance(index, 'hoursPerDay', e.target.value)}
+                                    style={inputStyle}
                                     min="0"
                                     max="24"
-                                    style={inputStyle}
                                 />
-                                <button
-                                    onClick={() => removeAppliance(index)}
-                                    style={removeButtonStyle}
-                                    title="Remove Appliance"
-                                >
-                                    X
+                                <button onClick={() => removeAppliance(index)} style={removeButtonStyle}>
+                                    Remove
                                 </button>
                             </div>
                         ))}
-                        <button
-                            onClick={addAppliance}
-                            style={{ ...buttonSecondaryStyle, marginTop: '10px' }}
-                            disabled={!applianceCategories[userType]?.length}
-                        >
-                            + Add Appliance
-                        </button>
-                        {appliances.length > 0 && (
-                            <div
-                                style={{
-                                    marginTop: '15px',
-                                    padding: '10px',
-                                    backgroundColor: '#f0f8ff',
-                                    borderRadius: '4px',
-                                    border: '1px solid #cce0ff',
-                                }}
-                            >
-                                <p style={{ margin: 0 }}>
-                                    <strong>Appliance Estimated Daily Use:</strong>{' '}
+                        <div style={{ marginTop: '15px' }}>
+                            <button onClick={addAppliance} style={buttonSecondaryStyle}>
+                                Add Appliance
+                            </button>
+                            {appliances.length > 0 && (
+                                <div style={{ marginTop: '10px', fontSize: '0.9em' }}>
+                                    <strong>Daily Consumption from Appliances:</strong>{' '}
                                     {calculateDailyApplianceKwh().toFixed(2)} kWh
-                                </p>
-                            </div>
-                        )}
+                                </div>
+                            )}
+                        </div>
                     </fieldset>
-                    <div style={fullWidthStyle}>
-                        <button
-                            onClick={handleCalculateClick}
-                            disabled={calculating}
-                            style={
-                                calculating
-                                    ? buttonDisabledStyle
-                                    : {
-                                          ...buttonStyle,
-                                          backgroundColor: '#28a745',
-                                          width: '100%',
-                                          padding: '15px',
-                                          fontSize: '1.2em',
-                                      }
-                            }
-                        >
-                            {calculating ? 'Calculating...' : 'Calculate System Size'}
-                        </button>
-                        {calculationError && <p style={errorStyle}>{calculationError}</p>}
-                    </div>
+                </div>
+
+                <div style={{ marginTop: '30px', textAlign: 'center' }}>
+                    <button
+                        onClick={handleCalculateClick}
+                        style={calculating ? buttonDisabledStyle : buttonStyle}
+                        disabled={calculating}
+                    >
+                        {calculating ? 'Calculating...' : 'Calculate Solar System'}
+                    </button>
+                    {calculationError && <div style={errorStyle}>{calculationError}</div>}
                 </div>
             </section>
 
-            {/* Calculation Results Section */}
-            <section style={sectionStyle}>
-                <h2 style={h2Style}>3. Calculation Results</h2>
-                {calculating && <p>Calculating, please wait...</p>}
-                {!calculating && calculationResult && !calculationError && (
+            {/* Results Section */}
+            {calculationResult && (
+                <section style={sectionStyle}>
+                    <h2 style={h2Style}>3. Solar System Results</h2>
                     <div style={resultBoxStyle}>
-                        <h3 style={h3Style}>System Specifications</h3>
+                        <h3 style={{ ...h3Style, marginTop: 0 }}>System Overview</h3>
                         <div style={gridStyle}>
-                            <p>
-                                <strong>PV Size:</strong>{' '}
-                                {calculationResult.pvSizeKwP?.toFixed(2) ?? 'N/A'} kWp
-                            </p>
-                            <p>
-                                <strong>Panels:</strong> {calculationResult.numberOfPanels ?? 'N/A'} x{' '}
-                                {calculationResult.panelWattage ?? 'N/A'} Wp
-                            </p>
-                            <p>
-                                <strong>Inverter Size:</strong>{' '}
-                                {calculationResult.inverterSizeKva?.toFixed(2) ?? 'N/A'} kVA
-                            </p>
-                            {calculationResult.battery?.sizeKwh > 0 && (
-                                <>
-                                    <p>
-                                        <strong>Battery:</strong>{' '}
-                                        {calculationResult.battery.sizeKwh?.toFixed(2)} kWh
-                                    </p>
-                                    <p>
-                                        <strong>No. of Batteries:</strong>{' '}
-                                        {calculationResult.battery.numberOfUnits ?? 'N/A'} (
-                                        {calculationResult.battery.unitCapacityKwh} kWh units)
-                                    </p>
-                                    <p>
-                                        <strong>Autonomy:</strong>{' '}
-                                        {calculationResult.autonomyDays ?? 'N/A'} days
-                                    </p>
-                                </>
-                            )}
-                            <p>
-                                <strong>Est. Annual Production:</strong>{' '}
-                                {calculationResult.annualProductionKwh?.toFixed(0) ?? 'N/A'} kWh
-                            </p>
-                            <p>
-                                <strong>Avg. Daily PSH:</strong>{' '}
-                                {calculationResult.dailyPeakSunHours?.toFixed(2) ?? 'N/A'} hrs
-                            </p>
-                            <p>
-                                <strong>Est. Payback:</strong>{' '}
-                                {calculationResult.simplePaybackYears?.toFixed(1) ?? 'N/A'} years
-                            </p>
+                            <div>
+                                <p>
+                                    <strong>Location:</strong> {calculationResult.location}
+                                </p>
+                                <p>
+                                    <strong>System Type:</strong> {calculationResult.systemType}
+                                </p>
+                                <p>
+                                    <strong>Daily Energy Consumption:</strong>{' '}
+                                    {calculationResult.dailyEnergyConsumptionKwh?.toFixed(2)} kWh
+                                </p>
+                                <p>
+                                    <strong>Energy Source:</strong> {calculationResult.energyConsumptionSource}
+                                </p>
+                            </div>
+                            <div>
+                                <p>
+                                    <strong>PV System Size:</strong> {calculationResult.pvSizeKwP?.toFixed(2)} kWp
+                                </p>
+                                <p>
+                                    <strong>Panel Configuration:</strong> {calculationResult.numberOfPanels} x{' '}
+                                    {calculationResult.panelWattage}W panels
+                                </p>
+                                <p>
+                                    <strong>Inverter Size:</strong> {calculationResult.inverterSizeKva?.toFixed(2)} kVA
+                                </p>
+                                <p>
+                                    <strong>Daily Peak Sun Hours:</strong>{' '}
+                                    {calculationResult.dailyPeakSunHours?.toFixed(2)} hours
+                                </p>
+                            </div>
                         </div>
-                        {calculationResult.budgetConstrained && (
-                            <p style={{ color: 'orange', fontWeight: 'bold', marginTop: '10px' }}>
-                                Note: System size reduced to meet budget of KES{' '}
-                                {calculationResult.targetBudget?.toLocaleString()}.
-                            </p>
+
+                        {calculationResult.systemType !== 'on-grid' && calculationResult.battery && (
+                            <div>
+                                <h3 style={h3Style}>Battery System</h3>
+                                <div style={gridStyle}>
+                                    <div>
+                                        <p>
+                                            <strong>Battery Capacity:</strong>{' '}
+                                            {calculationResult.battery.sizeKwh?.toFixed(2)} kWh
+                                        </p>
+                                        <p>
+                                            <strong>Battery Configuration:</strong>{' '}
+                                            {calculationResult.battery.numberOfUnits} x{' '}
+                                            {calculationResult.battery.unitCapacityKwh} kWh units
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <p>
+                                            <strong>Days of Autonomy:</strong> {calculationResult.autonomyDays}
+                                        </p>
+                                        <p>
+                                            <strong>Depth of Discharge:</strong>{' '}
+                                            {(calculationResult.battery.depthOfDischarge * 100).toFixed(0)}%
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
                         )}
-                        <h3 style={h3Style}>Cost Breakdown (KES)</h3>
-                        <div style={gridStyle}>
-                            <p>
-                                <strong>Panels:</strong>{' '}
-                                {calculationResult.estimatedCost?.panels?.toLocaleString() ?? 'N/A'}
-                            </p>
-                            <p>
-                                <strong>Inverter:</strong>{' '}
-                                {calculationResult.estimatedCost?.inverter?.toLocaleString() ?? 'N/A'}
-                            </p>
-                            {calculationResult.estimatedCost?.batteries > 0 && (
-                                <p>
-                                    <strong>Batteries:</strong>{' '}
-                                    {calculationResult.estimatedCost?.batteries?.toLocaleString() ?? 'N/A'}
-                                </p>
-                            )}
-                            {calculationResult.estimatedCost?.chargeController > 0 && (
-                                <p>
-                                    <strong>Charge Controller:</strong>{' '}
-                                    {calculationResult.estimatedCost?.chargeController?.toLocaleString() ??
-                                        'N/A'}
-                                </p>
-                            )}
-                            <p>
-                                <strong>Mounting/Racking:</strong>{' '}
-                                {calculationResult.estimatedCost?.mounting?.toLocaleString() ?? 'N/A'}
-                            </p>
-                            <p>
-                                <strong>Installation Labor:</strong>{' '}
-                                {calculationResult.estimatedCost?.installation?.toLocaleString() ?? 'N/A'}
-                            </p>
-                            <p style={{ fontWeight: 'bold', gridColumn: '1 / -1' }}>
-                                <strong>
-                                    Total Estimated Cost:{' '}
-                                    {calculationResult.estimatedCost?.total?.toLocaleString() ?? 'N/A'}
-                                </strong>
-                            </p>
-                        </div>
-                        <h3 style={h3Style}>Monthly Energy Production (kWh)</h3>
-                        {calculationResult.monthlyProduction &&
-                        calculationResult.monthlyProduction.length > 0 ? (
-                            <div style={{ maxWidth: '700px', margin: '20px auto' }}>
+
+                        <h3 style={h3Style}>Energy Production</h3>
+                        <p>
+                            <strong>Estimated Annual Production:</strong>{' '}
+                            {calculationResult.annualProductionKwh?.toFixed(0)} kWh
+                        </p>
+
+                        {calculationResult.monthlyProduction && (
+                            <div style={{ marginTop: '20px', height: '300px' }}>
                                 <Bar
                                     data={{
-                                        labels: calculationResult.monthlyProduction.map((m) =>
-                                            [
-                                                'Jan',
-                                                'Feb',
-                                                'Mar',
-                                                'Apr',
-                                                'May',
-                                                'Jun',
-                                                'Jul',
-                                                'Aug',
-                                                'Sep',
-                                                'Oct',
-                                                'Nov',
-                                                'Dec',
-                                            ][m.month - 1]
+                                        labels: calculationResult.monthlyProduction.map(
+                                            (m) =>
+                                                [
+                                                    'Jan',
+                                                    'Feb',
+                                                    'Mar',
+                                                    'Apr',
+                                                    'May',
+                                                    'Jun',
+                                                    'Jul',
+                                                    'Aug',
+                                                    'Sep',
+                                                    'Oct',
+                                                    'Nov',
+                                                    'Dec',
+                                                ][m.month - 1]
                                         ),
                                         datasets: [
                                             {
-                                                label: 'Est. Production (kWh)',
-                                                data: calculationResult.monthlyProduction.map((m) =>
-                                                    m.production.toFixed(0)
-                                                ),
-                                                backgroundColor: 'rgba(75, 192, 192, 0.6)',
-                                                borderColor: 'rgba(75, 192, 192, 1)',
+                                                label: 'Monthly Production (kWh)',
+                                                data: calculationResult.monthlyProduction.map((m) => m.production),
+                                                backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                                                borderColor: 'rgba(54, 162, 235, 1)',
                                                 borderWidth: 1,
                                             },
                                         ],
                                     }}
                                     options={{
                                         responsive: true,
-                                        maintainAspectRatio: true,
+                                        maintainAspectRatio: false,
                                         scales: {
-                                            y: { beginAtZero: true, title: { display: true, text: 'kWh' } },
+                                            y: {
+                                                beginAtZero: true,
+                                                title: {
+                                                    display: true,
+                                                    text: 'Energy (kWh)',
+                                                },
+                                            },
                                         },
-                                        plugins: { legend: { display: false } },
                                     }}
                                 />
                             </div>
-                        ) : (
-                            <p>Monthly production data not available.</p>
                         )}
-                        <div
-                            style={{ marginTop: '30px', display: 'flex', gap: '15px', flexWrap: 'wrap' }}
-                        >
-                            <button
-                                onClick={handleGeneratePDF}
-                                style={{ ...buttonStyle, backgroundColor: '#17a2b8' }}
-                            >
-                                Generate PDF Report
-                            </button>
+
+                        <h3 style={h3Style}>Financial Analysis</h3>
+                        <div style={gridStyle}>
+                            <div>
+                                <p>
+                                    <strong>Total System Cost:</strong> KSh{' '}
+                                    {calculationResult.estimatedCost?.total?.toLocaleString()}
+                                </p>
+                                {calculationResult.simplePaybackYears && (
+                                    <p>
+                                        <strong>Simple Payback Period:</strong>{' '}
+                                        {calculationResult.simplePaybackYears?.toFixed(1)} years
+                                    </p>
+                                )}
+                                {calculationResult.budgetConstrained && (
+                                    <p>
+                                        <strong>Budget Constrained:</strong> Yes (Target: KSh{' '}
+                                        {calculationResult.targetBudget?.toLocaleString()})
+                                    </p>
+                                )}
+                            </div>
+                            <div>
+                                <p>
+                                    <strong>Solar Panels:</strong> KSh{' '}
+                                    {calculationResult.estimatedCost?.panels?.toLocaleString()}
+                                </p>
+                                <p>
+                                    <strong>Inverter:</strong> KSh{' '}
+                                    {calculationResult.estimatedCost?.inverter?.toLocaleString()}
+                                </p>
+                                {calculationResult.estimatedCost?.batteries > 0 && (
+                                    <p>
+                                        <strong>Batteries:</strong> KSh{' '}
+                                        {calculationResult.estimatedCost?.batteries?.toLocaleString()}
+                                    </p>
+                                )}
+                                {calculationResult.estimatedCost?.chargeController > 0 && (
+                                    <p>
+                                        <strong>Charge Controller:</strong> KSh{' '}
+                                        {calculationResult.estimatedCost?.chargeController?.toLocaleString()}
+                                    </p>
+                                )}
+                                <p>
+                                    <strong>Mounting & Installation:</strong> KSh{' '}
+                                    {(
+                                        (calculationResult.estimatedCost?.mounting || 0) +
+                                        (calculationResult.estimatedCost?.installation || 0)
+                                    ).toLocaleString()}
+                                </p>
+                            </div>
+                        </div>
+
+                        <div style={{ marginTop: '30px', display: 'flex', justifyContent: 'center', gap: '15px' }}>
                             {isLoggedIn && (
-                                <button
-                                    onClick={saveCalculation}
-                                    style={buttonSecondaryStyle}
-                                    disabled={!calculationInputParams}
-                                >
+                                <button onClick={saveCalculation} style={buttonSecondaryStyle}>
                                     Save Calculation
                                 </button>
                             )}
+                            <button onClick={handleGeneratePDF} style={buttonStyle}>
+                                Generate PDF Report
+                            </button>
                         </div>
                     </div>
-                )}
-                {!calculating && !calculationResult && !calculationError && (
-                    <p>Enter details above and click "Calculate" to see results.</p>
-                )}
-            </section>
+                </section>
+            )}
+
+            <footer style={{ marginTop: '50px', textAlign: 'center', color: '#666', fontSize: '0.8em' }}>
+                <p>Solar System Sizing Calculator &copy; 2023</p>
+                <p>
+                    This tool provides estimates based on available data. Actual system performance may vary. Always
+                    consult with a certified solar installer before making purchasing decisions.
+                </p>
+            </footer>
         </div>
     );
 }
